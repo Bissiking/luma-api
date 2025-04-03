@@ -2,9 +2,9 @@
 
 namespace LumaApi\Controllers;
 
-use App\Core\Database;
-use App\Core\Logger;
-use App\Core\ApiErrors;
+use Core\Database;
+use Core\Logger;
+use Core\ApiErrors;
 
 /**
  * Contrôleur de base pour l'API
@@ -30,15 +30,19 @@ class BaseController {
      */
     public function __construct()
     {
-        global $config, $db;
+        // Charger la configuration
+        $this->config = require dirname(__DIR__) . '/config/app.php';
         
-        $this->config = $config;
-        $this->db = $db;
-        $this->currentUser = $this->getCurrentUser();
+        // Initialiser la connexion à la base de données
+        $dbConfig = require dirname(dirname(__DIR__)) . '/core/config/database.php';
+        $this->db = new Database($dbConfig);
         
-        // Vérification de l'authentification pour les routes protégées
-        if ($this->requiresAuth() && !$this->isAuthenticated()) {
-            $this->sendUnauthorizedResponse();
+        // Vérifier l'authentification uniquement si la méthode requiresAuth() est appelée
+        if (method_exists($this, 'requiresAuth') && $this->requiresAuth()) {
+            if (!$this->isAuthenticated()) {
+                $this->sendUnauthorizedResponse();
+                exit;
+            }
         }
     }
     
@@ -185,5 +189,18 @@ class BaseController {
             // Traitement des données de formulaire
             return $_POST;
         }
+    }
+
+    protected function sendApiError(int $code, string $message, array $details = []): void
+    {
+        header('Content-Type: application/json');
+        http_response_code($code >= 400 ? $code : 400);
+        echo json_encode([
+            'success' => false,
+            'error_code' => $code,
+            'message' => $message,
+            'details' => $details
+        ]);
+        exit;
     }
 } 

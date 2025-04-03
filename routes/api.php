@@ -12,9 +12,25 @@ if (!isset($apiRouter) || !($apiRouter instanceof \LumaApi\ApiRouter)) {
 }
 
 // Routes d'authentification
+$apiRouter->post('/auth/login', 'AuthController@login');
+$apiRouter->post('/auth/logout', 'AuthController@logout');
+$apiRouter->get('/auth/check', 'AuthController@check');
+
+// Routes legacy d'authentification (pour la compatibilité)
 $apiRouter->post('/api/auth/login', 'AuthController@login');
 $apiRouter->post('/api/auth/register', 'AuthController@register');
 $apiRouter->post('/api/auth/logout', 'AuthController@logout');
+
+// Routes d'administration pour la gestion des tokens
+$apiRouter->get('/admin/tokens', 'AdminController@listTokens');
+$apiRouter->get('/admin/users/{userId}/tokens', 'AdminController@userTokens');
+$apiRouter->post('/admin/tokens/{jti}/revoke', 'AdminController@revokeToken');
+$apiRouter->post('/admin/users/{userId}/revoke-tokens', 'AdminController@revokeUserTokens');
+
+// Routes pour les notifications
+$apiRouter->get('/notifications', 'NotificationController@getNotifications');
+$apiRouter->get('/notifications/{id}', 'NotificationController@getNotification');
+$apiRouter->post('/notifications/{id}/dismiss', 'NotificationController@dismissNotification');
 
 // Routes pour les utilisateurs
 $apiRouter->get('/api/users', 'UserController@index');

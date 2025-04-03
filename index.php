@@ -9,20 +9,66 @@
 
 namespace LumaApi;
 
+use Core\Database;
+use Core\Application;
+
+// Chargement de l'autoloader principal
+require_once __DIR__ . '/../core/autoload.php';
+
+// Chargement de la configuration
+$config = require_once __DIR__ . '/../core/config/database.php';
+
+// Initialisation de l'application principale si elle n'existe pas
+if (!isset($GLOBALS['app'])) {
+    $app = new Application($config);
+    $GLOBALS['app'] = $app;
+}
+
+// Récupération de l'instance de l'application depuis $GLOBALS
+$app = $GLOBALS['app'];
+
+// Récupération de la base de données, obligatoire pour l'API
+$database = $app->getDatabase();
+
+// Vérification que la base de données est accessible
+if ($database === null) {
+    // Si la base de données n'est pas accessible, on tente de la connecter
+    if ($app->connectToDatabase()) {
+        $database = $app->getDatabase();
+    } else {
+        // Erreur fatale pour l'API si pas de base de données
+        header('Content-Type: application/json');
+        http_response_code(503);
+        echo json_encode([
+            'success' => false,
+            'message' => 'Service API indisponible',
+            'error' => 'Base de données inaccessible'
+        ]);
+        exit;
+    }
+}
+
+// Configuration CORS
+header('Access-Control-Allow-Origin: https://dev.mhemery.fr');
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+header('Access-Control-Allow-Credentials: true');
+
+// Réponse aux requêtes OPTIONS (preflight)
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
 // Une classe de routeur spécifique à l'API pourrait être définie ici
 class ApiRouter {
     private $config;
     private $routes = [];
     private $database;
     
-    public function __construct(array $config, \Core\Database $database = null) {
+    public function __construct(array $config, Database $database) {
         $this->config = $config;
         $this->database = $database;
-        
-        // L'API nécessite obligatoirement une connexion à la base de données
-        if ($database === null) {
-            $this->sendDatabaseError();
-        }
     }
     
     public function get($route, $handler) {
@@ -49,7 +95,17 @@ class ApiRouter {
         $method = $_SERVER['REQUEST_METHOD'];
         $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
         
-        // Nouvelle vérification de la base de données avant chaque requête
+        // Suppression du préfixe /api si présent
+        if (strpos($uri, '/api') === 0) {
+            $uri = substr($uri, 4);
+        }
+        
+        // Si l'URI est vide après suppression du préfixe, on le met à '/'
+        if (empty($uri)) {
+            $uri = '/';
+        }
+        
+        // Vérification de la base de données
         if ($this->database === null) {
             $this->sendDatabaseError();
         }
@@ -80,14 +136,16 @@ class ApiRouter {
         http_response_code(404);
         echo json_encode([
             'success' => false,
-            'message' => 'Route API non trouvée'
+            'message' => 'Route API non trouvée',
+            'details' => [
+                'method' => $method,
+                'uri' => $uri,
+                'available_routes' => array_keys($this->routes[$method] ?? [])
+            ]
         ]);
         exit;
     }
     
-    /**
-     * Envoie une erreur de base de données et termine le script
-     */
     private function sendDatabaseError(): void {
         header('Content-Type: application/json');
         http_response_code(503);
@@ -95,30 +153,6 @@ class ApiRouter {
             'success' => false,
             'message' => 'Erreur de connexion à la base de données',
             'error' => 'Le service API n\'est pas disponible actuellement car la base de données est inaccessible'
-        ]);
-        exit;
-    }
-}
-
-// Récupération de l'instance de l'application depuis $GLOBALS
-$app = $GLOBALS['app'] ?? null;
-
-// Récupération de la base de données, obligatoire pour l'API
-$database = $app ? $app->getDatabase() : null;
-
-// Vérification que la base de données est accessible
-if ($database === null) {
-    // Si la base de données n'est pas accessible, on tente de la connecter
-    if ($app && $app->connectToDatabase()) {
-        $database = $app->getDatabase();
-    } else {
-        // Erreur fatale pour l'API si pas de base de données
-        header('Content-Type: application/json');
-        http_response_code(503);
-        echo json_encode([
-            'success' => false,
-            'message' => 'Service API indisponible',
-            'error' => 'Base de données inaccessible'
         ]);
         exit;
     }
