@@ -5,6 +5,10 @@ import TicketCategory from './TicketCategory';
 import TicketComment from './TicketComment';
 import TicketHistory from './TicketHistory';
 import TicketEscalation from './TicketEscalation';
+import MonitoringAgent from './MonitoringAgent';
+import MonitoringAgentConfig from './MonitoringAgentConfig';
+import MonitoringAlert from './MonitoringAlert';
+import MonitoringMetric from './MonitoringMetric';
 import { dbLogger as logger } from '../config/logger';
 
 // Export all models
@@ -15,7 +19,11 @@ export {
   TicketCategory,
   TicketComment,
   TicketHistory,
-  TicketEscalation
+  TicketEscalation,
+  MonitoringAgent,
+  MonitoringAgentConfig,
+  MonitoringAlert,
+  MonitoringMetric
 };
 
 // Sync all models with database
@@ -31,6 +39,12 @@ export const syncModels = async (force = false) => {
     await TicketComment.sync({ force });
     await TicketHistory.sync({ force });
     await TicketEscalation.sync({ force });
+    
+    // Sync monitoring models
+    await MonitoringAgent.sync({ force });
+    await MonitoringAgentConfig.sync({ force });
+    await MonitoringAlert.sync({ force });
+    await MonitoringMetric.sync({ force });
     
     logger.info('Synchronisation terminée');
     return true;

@@ -1,4 +1,10 @@
+# Dossiers
+logs
 node_modules
+src/logs
+config
+
+# Fichiers
 .env
 .env.local
 .env.development

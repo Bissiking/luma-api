@@ -5,6 +5,37 @@ import User from '../models/User';
 import UserToken from '../models/UserToken';
 import { CONFIG } from '../config/api.config';
 
+// Cache pour limiter les logs répétés
+const logCache = {
+  lastMessage: '',
+  count: 0,
+  lastTime: 0
+};
+
+// Fonction de log avec limitation
+const rateLimit = (message: string, level: 'warn' | 'error' | 'info', data?: any) => {
+  const now = Date.now();
+  const threshold = 5000; // 5 secondes entre les logs similaires
+  
+  if (message === logCache.lastMessage && now - logCache.lastTime < threshold) {
+    logCache.count++;
+    // Ne logger que tous les 10 messages identiques
+    if (logCache.count % 10 === 0) {
+      logger[level](`${message} (répété ${logCache.count} fois)`, data);
+    }
+  } else {
+    // Si c'était un message répété, afficher le résumé
+    if (logCache.count > 1) {
+      logger[level](`${logCache.lastMessage} (répété ${logCache.count} fois au total)`);
+    }
+    // Nouveau message
+    logger[level](message, data);
+    logCache.lastMessage = message;
+    logCache.count = 1;
+    logCache.lastTime = now;
+  }
+};
+
 // Étendre l'interface Request pour inclure l'utilisateur et le token
 declare global {
   namespace Express {
@@ -29,7 +60,12 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
 
     // Vérifier si un token existe
     if (!token) {
-      logger.warn('Tentative d\'accès à une route protégée sans token');
+      const route = `${req.method} ${req.originalUrl}`;
+      rateLimit(`Tentative d'accès à une route protégée sans token: ${route}`, 'warn', {
+        ip: req.ip,
+        route,
+        userAgent: req.headers['user-agent']
+      });
       res.status(401).json({ message: 'Non autorisé, veuillez vous connecter' });
       return;
     }
@@ -42,21 +78,29 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
       const userToken = await UserToken.findOne({
         where: {
           jti: decoded.jti,
-          is_valid: true,
-          revoked_at: null
+          revoked: 0,
+          revoked_at: null,
+          token_type: 'access'
         }
       });
 
       if (!userToken) {
-        logger.warn(`Token invalide ou révoqué: ${decoded.jti}`);
+        rateLimit(`Token invalide ou révoqué: ${decoded.jti}`, 'warn', {
+          jti: decoded.jti,
+          route: `${req.method} ${req.originalUrl}`
+        });
         res.status(401).json({ message: 'Token invalide ou expiré' });
         return;
       }
 
       // Vérifier si le token n'a pas expiré
       if (new Date() > new Date(userToken.expires_at)) {
-        await userToken.update({ is_valid: false, revoked_at: new Date() });
-        logger.warn(`Token expiré: ${decoded.jti}`);
+        await userToken.update({ revoked: 1, revoked_at: new Date() });
+        rateLimit(`Token expiré: ${decoded.jti}`, 'warn', {
+          jti: decoded.jti,
+          userId: decoded.id,
+          expiryDate: userToken.expires_at
+        });
         res.status(401).json({ message: 'Token expiré' });
         return;
       }
@@ -64,9 +108,20 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
       // Récupérer l'utilisateur
       const user = await User.findByPk(decoded.id);
       if (!user || !user.account_active) {
-        logger.warn(`Utilisateur non trouvé ou inactif: ${decoded.id}`);
+        rateLimit(`Utilisateur non trouvé ou inactif: ${decoded.id}`, 'warn', {
+          userId: decoded.id,
+          active: user ? user.account_active : false
+        });
         res.status(401).json({ message: 'Utilisateur non trouvé ou inactif' });
         return;
+      }
+
+      // Log d'accès réussi (mais limité)
+      if (Math.random() < 0.01) { // Seulement 1% des accès réussis sont loggés
+        logger.info(`Accès authentifié: ${user.username}`, {
+          userId: user.id,
+          route: `${req.method} ${req.originalUrl}`
+        });
       }
 
       // Ajouter l'utilisateur et le token à la requête
@@ -74,12 +129,20 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
       req.token = userToken;
       next();
     } catch (error) {
-      logger.error(`Erreur de vérification du token: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+      const errMsg = error instanceof Error ? error.message : 'Erreur inconnue';
+      rateLimit(`Erreur de vérification du token: ${errMsg}`, 'error', {
+        route: `${req.method} ${req.originalUrl}`,
+        error: errMsg
+      });
       res.status(401).json({ message: 'Token invalide' });
       return;
     }
   } catch (error) {
-    logger.error(`Erreur dans le middleware d'authentification: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+    const errMsg = error instanceof Error ? error.message : 'Erreur inconnue';
+    logger.error(`Erreur dans le middleware d'authentification: ${errMsg}`, {
+      route: `${req.method} ${req.originalUrl}`,
+      error: errMsg
+    });
     res.status(500).json({ message: 'Erreur serveur' });
   }
 };
@@ -91,12 +154,23 @@ export const restrictTo = (...roles: string[]) => {
   return (req: Request, res: Response, next: NextFunction) => {
     // Vérifier si l'utilisateur a le rôle requis
     if (!roles.includes(req.user.role)) {
-      logger.warn(`Tentative d'accès à une route restreinte par l'utilisateur: ${req.user.username}`);
+      rateLimit(`Tentative d'accès à une route restreinte par l'utilisateur: ${req.user.username}`, 'warn', {
+        userId: req.user.id,
+        role: req.user.role,
+        requiredRoles: roles,
+        route: `${req.method} ${req.originalUrl}`
+      });
       res.status(403).json({ message: 'Vous n\'avez pas la permission d\'effectuer cette action' });
       return;
     }
 
-    logger.info(`Accès autorisé à une route restreinte pour l'utilisateur: ${req.user.username}`);
+    if (Math.random() < 0.1) { // 10% des accès réussis sont loggés
+      logger.info(`Accès autorisé à une route restreinte pour l'utilisateur: ${req.user.username}`, {
+        userId: req.user.id,
+        role: req.user.role,
+        route: `${req.method} ${req.originalUrl}`
+      });
+    }
     next();
   };
 };
@@ -108,6 +182,11 @@ export const requireAdmin = (req: Request, res: Response, next: NextFunction): v
   if (req.user && req.user.role === 'admin') {
     next();
   } else {
+    rateLimit(`Tentative d'accès admin par un utilisateur non-admin: ${req.user ? req.user.username : 'anonyme'}`, 'warn', {
+      userId: req.user ? req.user.id : null,
+      role: req.user ? req.user.role : null,
+      route: `${req.method} ${req.originalUrl}`
+    });
     res.status(403).json({ message: 'Accès refusé. Droits d\'administrateur requis.' });
   }
 }; 

@@ -1,17 +1,22 @@
 import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
-import cors from 'cors';
 import morgan from 'morgan';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { connectDB } from './config/db';
 import { syncModels } from './models';
 import { logger } from './config/logger';
+import { corsMiddleware } from './middleware/corsMiddleware';
 import authRoutes from './routes/authRoutes';
 import ticketRoutes from './routes/ticketRoutes';
 import activityRoutes from './routes/activityRoutes';
 import userRoutes from './routes/userRoutes';
+import monitoringRoutes from './routes/monitoringRoutes';
+import monitoringAlertRoutes from './routes/monitoringAlertRoutes';
+import agentRoutes from './routes/agentRoutes';
 import { API_VERSION, API_INFO, API_FEATURES, API_ROUTES, CONFIG } from './config/api.config';
+import { baseRateLimit } from './config/rateLimit';
+import { setupAssociations } from './models/associations';
 
 // Charger les variables d'environnement
 dotenv.config();
@@ -25,21 +30,14 @@ app.set('trust proxy', 1);
 const PORT = CONFIG.port;
 
 // Middleware de sécurité
-if (API_FEATURES.helmet.enabled) {
-  app.use(helmet());
-}
+app.use(helmet());
 
-// Middleware CORS
-if (API_FEATURES.cors.enabled) {
-  app.use(cors({
-    origin: API_FEATURES.cors.origin,
-    methods: API_FEATURES.cors.methods
-  }));
-}
+// Middleware CORS personnalisé
+app.use(corsMiddleware);
 
 // Parser le corps des requêtes
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Logger les requêtes HTTP
 if (API_FEATURES.logging.enabled) {
@@ -62,11 +60,17 @@ if (API_FEATURES.rateLimit.enabled) {
   app.use(limiter);
 }
 
+// Limiter le taux de requêtes global pour éviter les surcharges
+app.use(baseRateLimit);
+
 // Routes
 app.use(`${API_INFO.baseUrl}${API_ROUTES.auth.base}`, authRoutes);
 app.use(`${API_INFO.baseUrl}/tickets`, ticketRoutes);
 app.use(`${API_INFO.baseUrl}/activities`, activityRoutes);
 app.use(`${API_INFO.baseUrl}/users`, userRoutes);
+app.use(`${API_INFO.baseUrl}/monitoring`, monitoringRoutes);
+app.use(`${API_INFO.baseUrl}/monitoring/alerts`, monitoringAlertRoutes);
+app.use(`${API_INFO.baseUrl}/agents`, agentRoutes);
 
 // Route de base
 app.get('/', (req: Request, res: Response) => {
@@ -104,6 +108,9 @@ const startServer = async () => {
     
     // Synchroniser les modèles
     await syncModels(false);
+    
+    // Après l'initialisation de la base de données
+    setupAssociations();
     
     // Démarrer le serveur
     app.listen(PORT, () => {

@@ -9,6 +9,7 @@ module.exports = {
     'schema': {
         'id': 'INT AUTO_INCREMENT PRIMARY KEY',
         'agent_id': 'INT NOT NULL',
+        'agent_uuid': 'VARCHAR(255) NOT NULL',
         'service_id': 'INT',
         'alert_type': 'ENUM("critical", "warning", "ok") NOT NULL',
         'message': 'TEXT',
@@ -23,12 +24,13 @@ module.exports = {
         'resolved_at': 'DATETIME',
         'created_at': 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP',
         'last_notification_at': 'DATETIME',
-        'notification_interval': 'INT NOT NULL DEFAULT 900', -- 15 minutes en secondes
+        'notification_interval': 'INT NOT NULL DEFAULT 900',
         'metadata': 'JSON',
         'tags': 'JSON'
     },
     'indexes': {
         'idx_agent_id': 'agent_id',
+        'idx_agent_uuid': 'agent_uuid',
         'idx_service_id': 'service_id',
         'idx_alert_type': 'alert_type',
         'idx_status': 'status',

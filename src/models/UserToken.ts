@@ -7,6 +7,7 @@ class UserToken extends Model {
   public user_id!: number;
   public token!: string;
   public jti!: string;
+  public token_type!: string; // 'access' ou 'refresh'
   public issued_at!: Date;
   public expires_at!: Date;
   public revoked!: number;
@@ -21,12 +22,12 @@ class UserToken extends Model {
 UserToken.init(
   {
     id: {
-      type: DataTypes.INTEGER,
+      type: DataTypes.INTEGER({ length: 11 }),
       autoIncrement: true,
       primaryKey: true,
     },
     user_id: {
-      type: DataTypes.INTEGER,
+      type: DataTypes.INTEGER({ length: 11 }),
       allowNull: false,
       references: {
         model: 'users',
@@ -42,6 +43,11 @@ UserToken.init(
       allowNull: false,
       unique: true
     },
+    token_type: {
+      type: DataTypes.ENUM('access', 'refresh'),
+      allowNull: false,
+      defaultValue: 'access'
+    },
     issued_at: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -52,12 +58,12 @@ UserToken.init(
       allowNull: false
     },
     revoked: {
-      type: DataTypes.TINYINT,
+      type: DataTypes.TINYINT({ length: 1 }),
       allowNull: false,
       defaultValue: 0
     },
     revoked_by: {
-      type: DataTypes.INTEGER,
+      type: DataTypes.INTEGER({ length: 11 }),
       allowNull: true,
       defaultValue: null
     },

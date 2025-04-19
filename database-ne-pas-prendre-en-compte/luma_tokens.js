@@ -10,6 +10,7 @@ module.exports = {
         'user_id': 'INT NOT NULL',
         'token': 'VARCHAR(1024) NOT NULL',
         'jti': 'VARCHAR(64) NOT NULL',
+        'token_type': 'ENUM("access", "refresh") NOT NULL DEFAULT "access"',
         'issued_at': 'DATETIME NOT NULL',
         'expires_at': 'DATETIME NOT NULL',
         'revoked': 'TINYINT(1) NOT NULL DEFAULT 0',

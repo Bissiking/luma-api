@@ -9,10 +9,10 @@ dotenv.config();
 
 // Version de l'API
 export const API_VERSION = {
-  name: 'LUMA.A0.0.1-Phoenix',
-  major: 0,
+  name: 'LUMA.A01-Phoenix',
+  major: 1,
   minor: 0,
-  patch: 1,
+  patch: 0,
   codeName: 'Phoenix',
   fullName: 'LUMA API',
   releaseDate: '2025-04-11'
@@ -35,8 +35,10 @@ export const CONFIG = {
   isProd: process.env.NODE_ENV === 'production',
   jwt: {
     secret: process.env.JWT_SECRET || 'luma_jwt_secret_key_change_in_production',
+    refreshSecret: process.env.JWT_REFRESH_SECRET || 'luma_jwt_refresh_secret_key_change_in_production',
     expiresIn: 60 * 60 * 24, // 24 heures en secondes
-    rememberMeExpiresIn: 60 * 60 * 24 * 7 // 7 jours en secondes
+    rememberMeExpiresIn: 60 * 60 * 24 * 7, // 7 jours en secondes
+    refreshExpiresIn: 60 * 60 * 24 * 30 // 30 jours en secondes
   }
 };
 

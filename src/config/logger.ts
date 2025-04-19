@@ -1,70 +1,112 @@
 import winston from 'winston';
+import 'winston-daily-rotate-file';
 import path from 'path';
-import fs from 'fs';
 
-// Créer le répertoire de logs s'il n'existe pas
-const logDir = path.join(__dirname, '../../logs');
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
-}
+// Définir les niveaux de log et leurs couleurs
+const levels = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  http: 3,
+  debug: 4,
+};
 
-// Définir les formats de logs
-const logFormat = winston.format.combine(
+const colors = {
+  error: 'red',
+  warn: 'yellow',
+  info: 'green',
+  http: 'magenta',
+  debug: 'cyan',
+};
+
+// Ajouter les couleurs à winston
+winston.addColors(colors);
+
+// Définir le format de log
+const format = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-  winston.format.printf(({ timestamp, level, message }) => {
-    return `[${timestamp}] ${level.toUpperCase()}: ${message}`;
-  })
+  winston.format.errors({ stack: true }),
+  winston.format.json()
 );
 
-// Créer les transports
-const consoleTransport = new winston.transports.Console({
-  format: winston.format.combine(
-    winston.format.colorize(),
-    logFormat
-  )
-});
+// Définir le dossier de logs
+const logDir = process.env.LOG_DIR || 'logs';
 
-const fileTransport = new winston.transports.File({
-  filename: path.join(logDir, 'api.log'),
-  format: logFormat,
-  maxsize: 5242880, // 5MB
-  maxFiles: 5
-});
-
-const errorTransport = new winston.transports.File({
-  filename: path.join(logDir, 'error.log'),
-  format: logFormat,
+// Créer les transports pour les différents niveaux de log
+const errorFileTransport = new winston.transports.DailyRotateFile({
+  filename: path.join(logDir, 'error-%DATE%.log'),
+  datePattern: 'YYYY-MM-DD',
   level: 'error',
-  maxsize: 5242880, // 5MB
-  maxFiles: 5
+  maxSize: '10m',
+  maxFiles: '14d',
+  format
 });
 
-const dbTransport = new winston.transports.File({
-  filename: path.join(logDir, 'db.log'),
-  format: logFormat,
-  maxsize: 5242880, // 5MB
-  maxFiles: 5
+const combinedFileTransport = new winston.transports.DailyRotateFile({
+  filename: path.join(logDir, 'combined-%DATE%.log'),
+  datePattern: 'YYYY-MM-DD',
+  maxSize: '10m',
+  maxFiles: '14d',
+  format
 });
 
-// Créer le logger
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: logFormat,
+const httpFileTransport = new winston.transports.DailyRotateFile({
+  filename: path.join(logDir, 'http-%DATE%.log'),
+  datePattern: 'YYYY-MM-DD',
+  level: 'http',
+  maxSize: '10m',
+  maxFiles: '7d',
+  format
+});
+
+// Format pour la console
+const consoleFormat = winston.format.combine(
+  winston.format.colorize({ all: true }),
+  winston.format.timestamp({ format: 'HH:mm:ss' }),
+  winston.format.printf(
+    (info) => `${info.timestamp} ${info.level}: ${info.message}${info.stack ? `\n${info.stack}` : ''}`
+  )
+);
+
+// Créer les loggers pour différentes parties de l'application
+export const logger = winston.createLogger({
+  levels,
+  format,
+  defaultMeta: { service: 'luma-api' },
   transports: [
-    consoleTransport,
-    fileTransport,
-    errorTransport
-  ]
+    // Tous les logs
+    combinedFileTransport,
+    // Seulement les logs d'erreur
+    errorFileTransport,
+    // Seulement les logs HTTP
+    httpFileTransport,
+    // Console en environnement de développement
+    new winston.transports.Console({
+      level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+      format: consoleFormat,
+    }),
+  ],
+  exitOnError: false,
 });
 
-// Logger spécifique pour les opérations de base de données
-const dbLogger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: logFormat,
+// Logger spécifique pour la base de données
+export const dbLogger = winston.createLogger({
+  levels,
+  format,
+  defaultMeta: { service: 'luma-db' },
   transports: [
-    consoleTransport,
-    dbTransport
-  ]
-});
-
-export { logger, dbLogger }; 
+    new winston.transports.DailyRotateFile({
+      filename: path.join(logDir, 'db-%DATE%.log'),
+      datePattern: 'YYYY-MM-DD',
+      maxSize: '10m',
+      maxFiles: '7d',
+      format
+    }),
+    // Console en environnement de développement
+    new winston.transports.Console({
+      level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+      format: consoleFormat,
+    }),
+  ],
+  exitOnError: false,
+}); 
