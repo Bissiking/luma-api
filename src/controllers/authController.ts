@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { Op } from 'sequelize';
 import User from '../models/User';
@@ -8,6 +7,8 @@ import UserToken from '../models/UserToken';
 import { logger } from '../config/logger';
 import { logLoginActivity, logLogoutActivity } from '../utils/activityLogger';
 import { CONFIG } from '../config/api.config';
+import JwtService from '../services/jwtService';
+import AuthValidator from '../utils/authValidator';
 
 // Durée de validité du token JWT en secondes (24 heures)
 const TOKEN_EXPIRATION = 60 * 60 * 24;
@@ -17,18 +18,18 @@ const TOKEN_EXPIRATION = 60 * 60 * 24;
  */
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, name } = req.body;
 
     // Vérifier si l'utilisateur existe déjà
-    const existingUser = await User.findOne({
-      where: {
-        [Op.or]: [{ username }, { email }]
-      }
-    });
+    const existingUser = await AuthValidator.validateUserExists(username) || 
+                         await AuthValidator.validateUserExists(email);
 
     if (existingUser) {
       logger.warn(`Tentative d'inscription avec un nom d'utilisateur ou email déjà utilisé: ${username}, ${email}`);
-      res.status(409).json({ message: 'Nom d\'utilisateur ou email déjà utilisé' });
+      res.status(409).json({ 
+        success: false,
+        message: 'Nom d\'utilisateur ou email déjà utilisé' 
+      });
       return;
     }
 
@@ -37,6 +38,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       username,
       email,
       password,
+      name: name || 'Utilisateur',
       role: 'user',
       account_administrator: false,
       account_active: true
@@ -44,12 +46,27 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
     logger.info(`Nouvel utilisateur créé: ${username}`);
 
-    // Générer un token JWT
-    const token = await generateToken(user, false);
+    // Ajouter les informations du client
+    user.device_info = req.headers['user-agent'];
+    user.ip_address = req.ip;
+
+    // Générer les tokens JWT
+    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = 
+      await JwtService.generateTokenPair(user, false, 'register');
 
     // Journaliser l'activité de connexion
-    const jti = jwt.decode(token) as any;
-    await logLoginActivity(user.id, true, req, jti?.jti);
+    const decodedToken = jwt.decode(accessToken) as any;
+    await logLoginActivity(user.id, true, req, decodedToken?.jti, 'register');
+
+    // Définir les cookies si configuré
+    if (CONFIG.jwt.cookieHttpOnly) {
+      res.cookie('refresh_token', refreshToken, {
+        httpOnly: CONFIG.jwt.cookieHttpOnly,
+        secure: CONFIG.jwt.cookieSecure,
+        sameSite: CONFIG.jwt.cookieSameSite as 'strict' | 'lax' | 'none' | boolean,
+        maxAge: CONFIG.jwt.refreshExpiresIn * 1000
+      });
+    }
 
     // Répondre avec les informations de l'utilisateur
     res.status(201).json({
@@ -59,13 +76,21 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         id: user.id,
         username: user.username,
         email: user.email,
+        name: user.name,
         role: user.role
       },
-      token
+      token: accessToken,
+      refresh_token: refreshToken,
+      expires_at: accessExpiresAt.toISOString(),
+      refresh_expires_at: refreshExpiresAt.toISOString()
     });
   } catch (error: any) {
     logger.error(`Erreur lors de l'inscription: ${error.message}`);
-    res.status(500).json({ message: 'Erreur lors de l\'inscription', error: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: 'Erreur lors de l\'inscription', 
+      error: error.message 
+    });
   }
 };
 
@@ -74,36 +99,50 @@ export const register = async (req: Request, res: Response): Promise<void> => {
  */
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { username, password, remember_me } = req.body;
+    const { username, password, remember_me, source = 'LUMA' } = req.body;
 
     // Trouver l'utilisateur
-    const user = await User.findOne({
-      where: {
-        [Op.or]: [
-          { username },
-          { email: username }
-        ]
-      }
-    });
+    const user = await AuthValidator.validateUserExists(username);
 
     if (!user) {
-      logger.warn(`Tentative de connexion avec un utilisateur inexistant: ${username}`);
-      res.status(401).json({ message: 'Identifiants invalides' });
+      logger.warn(`Tentative de connexion avec un utilisateur inexistant: ${username}`, {
+        source,
+        username
+      });
+      await logLoginActivity(0, false, req, undefined, source);
+      res.status(401).json({ 
+        success: false,
+        message: 'Identifiants invalides' 
+      });
       return;
     }
 
     // Vérifier si le compte est actif
-    if (!user.account_active) {
-      logger.warn(`Tentative de connexion sur un compte désactivé: ${username}`);
-      res.status(403).json({ message: 'Compte désactivé' });
+    if (!AuthValidator.isUserActive(user)) {
+      logger.warn(`Tentative de connexion sur un compte désactivé: ${username}`, {
+        source,
+        userId: user.id
+      });
+      await logLoginActivity(user.id, false, req, undefined, source);
+      res.status(403).json({ 
+        success: false,
+        message: 'Compte désactivé' 
+      });
       return;
     }
 
     // Vérifier le mot de passe
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      logger.warn(`Tentative de connexion avec un mot de passe invalide pour: ${username}`);
-      res.status(401).json({ message: 'Identifiants invalides' });
+      logger.warn(`Tentative de connexion avec un mot de passe invalide pour: ${username}`, {
+        source,
+        userId: user.id
+      });
+      await logLoginActivity(user.id, false, req, undefined, source);
+      res.status(401).json({ 
+        success: false,
+        message: 'Identifiants invalides' 
+      });
       return;
     }
 
@@ -111,10 +150,34 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     user.device_info = req.headers['user-agent'];
     user.ip_address = req.ip;
 
-    // Générer les tokens
-    const { accessToken, refreshToken } = await generateTokens(user, remember_me === true);
+    // Générer les tokens JWT
+    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt, accessJti } = 
+      await JwtService.generateTokenPair(user, remember_me === true, source);
 
-    logger.info(`Connexion réussie pour l'utilisateur: ${username}`);
+    // Mettre à jour la date de dernière connexion
+    await user.update({
+      last_login: new Date()
+    });
+
+    // Journaliser la connexion réussie
+    await logLoginActivity(user.id, true, req, accessJti, source);
+
+    logger.info(`Connexion réussie pour l'utilisateur: ${username}`, {
+      source,
+      userId: user.id
+    });
+
+    // Définir les cookies si configuré
+    if (CONFIG.jwt.cookieHttpOnly) {
+      // Refresh token dans un cookie httpOnly
+      res.cookie('refresh_token', refreshToken, {
+        httpOnly: CONFIG.jwt.cookieHttpOnly,
+        secure: CONFIG.jwt.cookieSecure,
+        sameSite: CONFIG.jwt.cookieSameSite as 'strict' | 'lax' | 'none' | boolean,
+        maxAge: (remember_me === true ? CONFIG.jwt.rememberMeRefreshExpiresIn : CONFIG.jwt.refreshExpiresIn) * 1000
+      });
+    }
+
     res.json({
       success: true,
       message: 'Connexion réussie',
@@ -126,7 +189,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         name: user.name
       },
       token: accessToken,
-      refresh_token: refreshToken
+      refresh_token: refreshToken, // Inclus dans la réponse même si envoyé dans un cookie
+      expires_at: accessExpiresAt.toISOString(),
+      refresh_expires_at: refreshExpiresAt.toISOString()
     });
   } catch (error: any) {
     logger.error(`Erreur lors de la connexion: ${error.message}`);
@@ -144,13 +209,38 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 export const logout = async (req: Request, res: Response): Promise<void> => {
   try {
     if (req.token) {
-      // Révoquer le token
-      await req.token.update({
-        revoked: 1,
-        revoked_at: new Date()
-      });
+      // Révoquer le token d'accès actuel
+      await JwtService.revokeToken(req.token.jti, req.user.id);
+      
+      // Chercher et révoquer tous les refresh tokens de l'utilisateur
+      // Option 1: Révoquer uniquement le refresh token associé à cette session
+      const refreshToken = AuthValidator.extractRefreshTokenFromRequest(req);
+      if (refreshToken) {
+        try {
+          const decodedRefresh = jwt.verify(refreshToken, CONFIG.jwt.refreshSecret) as any;
+          await JwtService.revokeToken(decodedRefresh.jti, req.user.id);
+        } catch (error) {
+          // Ignorer les erreurs de vérification de refresh token
+          logger.debug('Impossible de révoquer le refresh token fourni.');
+        }
+      }
+      
+      // Option 2 (optionnelle): Révoquer tous les tokens de l'utilisateur (déconnexion de tous les appareils)
+      // Si le paramètre all_devices est fourni
+      if (req.body.all_devices === true || req.query.all_devices === 'true') {
+        await JwtService.revokeAllUserTokens(req.user.id, req.user.id);
+        logger.info(`Tous les tokens de l'utilisateur ${req.user.username} ont été révoqués`);
+      }
 
+      // Journaliser la déconnexion
+      await logLogoutActivity(req.user.id, req, req.token.jti);
+      
       logger.info(`Déconnexion réussie pour l'utilisateur: ${req.user.username}`);
+    }
+    
+    // Effacer le cookie de refresh token s'il existe
+    if (CONFIG.jwt.cookieHttpOnly) {
+      res.clearCookie('refresh_token');
     }
 
     res.json({
@@ -172,6 +262,7 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
  */
 export const verifyToken = async (req: Request, res: Response): Promise<void> => {
   try {
+    // Si on arrive ici, c'est que le middleware d'authentification a déjà validé le token
     res.json({
       success: true,
       message: 'Token valide',
@@ -182,6 +273,9 @@ export const verifyToken = async (req: Request, res: Response): Promise<void> =>
           email: req.user.email,
           role: req.user.role,
           name: req.user.name
+        },
+        token: {
+          expires_at: req.token.expires_at
         }
       }
     });
@@ -189,267 +283,129 @@ export const verifyToken = async (req: Request, res: Response): Promise<void> =>
     logger.error(`Erreur lors de la vérification du token: ${error.message}`);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la vérification du token',
+      message: 'Erreur lors de la vérification',
       error: error.message
     });
   }
 };
 
 /**
- * Vérifier la validité du token avec des options CORS spécifiques
- * Cette méthode est spécialement conçue pour les requêtes de vérification frontend
+ * Vérifier la validité du token avec des informations d'identification (pour CORS)
  */
 export const verifyTokenWithCredentials = async (req: Request, res: Response): Promise<any> => {
+  // Si on atteint cette méthode, c'est que le token a déjà été vérifié par le middleware
+  return res.json({
+    success: true,
+    message: 'Token valide',
+    data: {
+      user: {
+        id: req.user.id,
+        username: req.user.username,
+        email: req.user.email,
+        role: req.user.role,
+        name: req.user.name
+      }
+    }
+  });
+};
+
+/**
+ * Récupérer le profil de l'utilisateur connecté
+ */
+export const getProfile = async (req: Request, res: Response): Promise<void> => {
   try {
-    // Assurez-vous que les en-têtes CORS sont correctement définis
-    res.header('Access-Control-Allow-Origin', 'https://dev.mhemery.fr');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    const user = req.user;
     
-    // Si c'est une requête OPTIONS (preflight), renvoyer 200 OK
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
-
-    // La requête normale
-    if (!req.user) {
-      return res.status(401).json({
+    // Vérifier si l'utilisateur existe encore en base
+    const freshUser = await User.findByPk(user.id);
+    if (!freshUser || !AuthValidator.isUserActive(freshUser)) {
+      res.status(404).json({
         success: false,
-        message: 'Non authentifié'
+        message: 'Utilisateur non trouvé ou compte désactivé'
       });
+      return;
     }
-
-    return res.json({
+    
+    res.json({
       success: true,
-      message: 'Token valide',
       data: {
         user: {
-          id: req.user.id,
-          username: req.user.username,
-          email: req.user.email,
-          role: req.user.role,
-          name: req.user.name
+          id: freshUser.id,
+          username: freshUser.username,
+          email: freshUser.email,
+          name: freshUser.name,
+          role: freshUser.role,
+          account_administrator: freshUser.account_administrator,
+          last_login: freshUser.last_login
         }
       }
     });
   } catch (error: any) {
-    logger.error(`Erreur lors de la vérification du token: ${error.message}`, {
-      error: error.message,
-      stack: error.stack,
-      headers: req.headers
-    });
-    return res.status(500).json({
+    logger.error(`Erreur lors de la récupération du profil: ${error.message}`);
+    res.status(500).json({
       success: false,
-      message: 'Erreur lors de la vérification du token',
+      message: 'Erreur lors de la récupération du profil',
       error: error.message
     });
   }
 };
 
 /**
- * Récupération du profil de l'utilisateur
- */
-export const getProfile = async (req: Request, res: Response): Promise<void> => {
-  try {
-    // L'utilisateur est attaché à la requête par le middleware d'authentification
-    const userId = req.user.id;
-
-    // Récupérer l'utilisateur depuis la base de données
-    const user = await User.findByPk(userId, {
-      attributes: { exclude: ['password'] }
-    });
-
-    if (!user) {
-      logger.warn(`Tentative d'accès à un profil inexistant: ${userId}`);
-      res.status(404).json({ message: 'Utilisateur non trouvé' });
-      return;
-    }
-
-    logger.info(`Profil récupéré: ${user.username}`);
-
-    // Répondre avec les informations de l'utilisateur
-    res.status(200).json({
-      user
-    });
-  } catch (error: any) {
-    logger.error(`Erreur lors de la récupération du profil: ${error.message}`);
-    res.status(500).json({ message: 'Erreur lors de la récupération du profil', error: error.message });
-  }
-};
-
-/**
- * Générer un token JWT d'accès et de rafraîchissement
- */
-const generateTokens = async (user: any, rememberMe: boolean = false): Promise<{ accessToken: string, refreshToken: string }> => {
-  // Générer un token d'accès
-  const accessJti = uuidv4();
-  const expiresIn = rememberMe ? CONFIG.jwt.rememberMeExpiresIn : CONFIG.jwt.expiresIn;
-  
-  const accessToken = jwt.sign(
-    {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      jti: accessJti
-    },
-    CONFIG.jwt.secret,
-    { expiresIn }
-  );
-
-  // Calculer la date d'expiration du token d'accès
-  const accessExpiresAt = new Date();
-  accessExpiresAt.setSeconds(accessExpiresAt.getSeconds() + expiresIn);
-
-  // Générer un token de rafraîchissement
-  const refreshJti = uuidv4();
-  const refreshToken = jwt.sign(
-    {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      jti: refreshJti
-    },
-    CONFIG.jwt.refreshSecret,
-    { expiresIn: CONFIG.jwt.refreshExpiresIn }
-  );
-
-  // Calculer la date d'expiration du token de rafraîchissement
-  const refreshExpiresAt = new Date();
-  refreshExpiresAt.setSeconds(refreshExpiresAt.getSeconds() + CONFIG.jwt.refreshExpiresIn);
-
-  // Sauvegarder les tokens dans la base de données
-  await UserToken.create({
-    user_id: user.id,
-    token: accessToken,
-    jti: accessJti,
-    token_type: 'access',
-    expires_at: accessExpiresAt,
-    device_info: user.device_info || null,
-    ip_address: user.ip_address || null
-  });
-
-  await UserToken.create({
-    user_id: user.id,
-    token: refreshToken,
-    jti: refreshJti,
-    token_type: 'refresh',
-    expires_at: refreshExpiresAt,
-    device_info: user.device_info || null,
-    ip_address: user.ip_address || null
-  });
-
-  return { accessToken, refreshToken };
-};
-
-// Conserver l'ancienne fonction pour la compatibilité
-const generateToken = async (user: any, rememberMe: boolean = false): Promise<string> => {
-  const { accessToken } = await generateTokens(user, rememberMe);
-  return accessToken;
-};
-
-/**
- * Rafraîchir un token JWT
+ * Rafraîchir le token JWT
  */
 export const refreshToken = async (req: Request, res: Response): Promise<void> => {
   try {
-    // Vérifier si un refresh token est fourni
-    const { refresh_token } = req.body;
+    // Récupérer le refresh token depuis les cookies ou le corps de la requête
+    const refreshToken = AuthValidator.extractRefreshTokenFromRequest(req);
     
-    if (!refresh_token) {
-      logger.warn('Tentative de rafraîchissement sans refresh token');
+    if (!refreshToken) {
       res.status(400).json({
         success: false,
-        message: 'Refresh token requis'
+        message: 'Refresh token non fourni'
       });
       return;
     }
 
-    // Vérifier le refresh token
-    let decoded;
-    try {
-      decoded = jwt.verify(refresh_token, CONFIG.jwt.refreshSecret) as any;
-    } catch (error) {
-      logger.warn('Refresh token invalide ou expiré');
-      res.status(401).json({
-        success: false,
-        message: 'Refresh token invalide ou expiré'
-      });
-      return;
-    }
-
-    // Vérifier si le refresh token existe dans la base de données
-    const userToken = await UserToken.findOne({
-      where: {
-        jti: decoded.jti,
-        revoked: 0,
-        revoked_at: null,
-        token_type: 'refresh'
-      }
-    });
-
-    if (!userToken) {
-      logger.warn(`Refresh token non trouvé ou révoqué: ${decoded.jti}`);
-      res.status(401).json({
-        success: false,
-        message: 'Refresh token non valide'
-      });
-      return;
-    }
-
-    // Vérifier si le refresh token n'a pas expiré
-    if (new Date() > new Date(userToken.expires_at)) {
-      await userToken.update({
-        revoked: 1,
-        revoked_at: new Date()
-      });
-      logger.warn(`Refresh token expiré: ${decoded.jti}`);
-      res.status(401).json({
-        success: false,
-        message: 'Refresh token expiré'
-      });
-      return;
-    }
-
-    // Trouver l'utilisateur
-    const user = await User.findByPk(decoded.id);
-    if (!user || !user.account_active) {
-      logger.warn(`Utilisateur non trouvé ou inactif: ${decoded.id}`);
-      res.status(401).json({
-        success: false,
-        message: 'Utilisateur non trouvé ou inactif'
-      });
-      return;
-    }
-
-    // Révoquer l'ancien refresh token
-    await userToken.update({
-      revoked: 1,
-      revoked_at: new Date()
-    });
-
-    // Générer de nouveaux tokens
-    user.device_info = req.headers['user-agent'];
-    user.ip_address = req.ip;
-    const { accessToken, refreshToken: newRefreshToken } = await generateTokens(user, true);
-
-    logger.info(`Token rafraîchi avec succès pour l'utilisateur: ${user.username}`);
+    // Extraire la source et le remember_me (si fournis)
+    const { source = 'LUMA', remember_me = false } = req.body;
     
+    // Utiliser le service JWT pour rafraîchir le token
+    const { accessToken, refreshToken: newRefreshToken, accessExpiresAt, refreshExpiresAt } = 
+      await JwtService.refreshAccessToken(refreshToken, remember_me, source);
+
+    // Journaliser l'activité (optionnel pour le refresh)
+    const decodedToken = jwt.decode(accessToken) as any;
+    if (decodedToken && decodedToken.id) {
+      await logLoginActivity(decodedToken.id, true, req, decodedToken?.jti, 'token_refresh');
+    }
+
+    // Définir les cookies si configuré
+    if (CONFIG.jwt.cookieHttpOnly) {
+      res.cookie('refresh_token', newRefreshToken, {
+        httpOnly: CONFIG.jwt.cookieHttpOnly,
+        secure: CONFIG.jwt.cookieSecure,
+        sameSite: CONFIG.jwt.cookieSameSite as 'strict' | 'lax' | 'none' | boolean,
+        maxAge: (remember_me ? CONFIG.jwt.rememberMeRefreshExpiresIn : CONFIG.jwt.refreshExpiresIn) * 1000
+      });
+    }
+
     res.json({
       success: true,
       message: 'Token rafraîchi avec succès',
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        name: user.name
-      },
       token: accessToken,
-      refresh_token: newRefreshToken
+      refresh_token: newRefreshToken,
+      expires_at: accessExpiresAt.toISOString(),
+      refresh_expires_at: refreshExpiresAt.toISOString()
     });
   } catch (error: any) {
     logger.error(`Erreur lors du rafraîchissement du token: ${error.message}`);
-    res.status(500).json({
+    
+    // Effacer le cookie si le refresh token est invalide
+    if (CONFIG.jwt.cookieHttpOnly) {
+      res.clearCookie('refresh_token');
+    }
+    
+    res.status(401).json({
       success: false,
       message: 'Erreur lors du rafraîchissement du token',
       error: error.message

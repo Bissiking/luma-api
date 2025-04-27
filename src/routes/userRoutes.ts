@@ -3,6 +3,7 @@ import { protect, requireAdmin } from '../middleware/authMiddleware';
 import User from '../models/User';
 import { logger } from '../config/logger';
 import bcrypt from 'bcryptjs';
+import { logUserActivity } from '../utils/activityLogger';
 
 const router = Router();
 
@@ -82,10 +83,20 @@ router.put('/:id', protect, async (req, res) => {
 
     // Préparer les données à mettre à jour
     const updateData: any = {};
+    const changes: any = {};
 
-    if (name) updateData.name = name;
-    if (email) updateData.email = email;
-    if (username) updateData.username = username;
+    if (name && name !== user.name) {
+      updateData.name = name;
+      changes.name = { old: user.name, new: name };
+    }
+    if (email && email !== user.email) {
+      updateData.email = email;
+      changes.email = { old: user.email, new: email };
+    }
+    if (username && username !== user.username) {
+      updateData.username = username;
+      changes.username = { old: user.username, new: username };
+    }
 
     // Si un nouveau mot de passe est fourni
     if (new_password) {
@@ -116,10 +127,27 @@ router.put('/:id', protect, async (req, res) => {
       // Hasher le nouveau mot de passe
       const salt = await bcrypt.genSalt(10);
       updateData.password = await bcrypt.hash(new_password, salt);
+      changes.password = { changed: true };
     }
 
     // Mettre à jour l'utilisateur
     await user.update(updateData);
+
+    // Journaliser l'activité si des changements ont été effectués
+    if (Object.keys(changes).length > 0) {
+      await logUserActivity(
+        userId,
+        'profile_update',
+        'Mise à jour du profil',
+        {
+          module: 'profile',
+          resource_type: 'user',
+          resource_id: userId.toString(),
+          details: changes,
+          req
+        }
+      );
+    }
 
     // Récupérer l'utilisateur mis à jour (sans le mot de passe)
     const updatedUser = await User.findByPk(userId, {

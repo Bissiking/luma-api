@@ -31,6 +31,11 @@ export const logUserActivity = async (
     req?: Request;
   }
 ): Promise<void> => {
+  // Ne pas enregistrer si userId invalide (pas d'utilisateur en base)
+  if (userId <= 0) {
+    logger.warn(`Ignorer l'activité pour un userId invalide: ${userId}`);
+    return;
+  }
   try {
     // Extraire les informations du client à partir de la requête si fournie
     if (options?.req) {
@@ -102,7 +107,8 @@ export const logLoginActivity = async (
   userId: number,
   isSuccess: boolean,
   req?: Request,
-  tokenJti?: string
+  tokenJti?: string,
+  source: string = 'LUMA'
 ): Promise<void> => {
   if (isSuccess) {
     await logUserActivity(
@@ -112,6 +118,7 @@ export const logLoginActivity = async (
       {
         module: 'auth',
         status: 'success',
+        details: { source },
         req
       }
     );
@@ -123,6 +130,7 @@ export const logLoginActivity = async (
       {
         module: 'auth',
         status: 'failure',
+        details: { source },
         req
       }
     );

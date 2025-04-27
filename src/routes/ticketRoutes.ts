@@ -9,6 +9,7 @@ import { logger } from '../config/logger';
 import sequelize from '../config/db';
 import User from '../models/User';
 import { Op } from 'sequelize';
+import { logUserActivity } from '../utils/activityLogger';
 
 const router = Router();
 
@@ -188,6 +189,52 @@ router.get('/stats/user/:userId', protect, async (req, res) => {
   }
 });
 
+// Route pour obtenir les statistiques globales des tickets
+router.get('/stats', protect, async (req, res) => {
+  try {
+    // Récupérer les statistiques des tickets
+    const stats = {
+      total: await Ticket.count(),
+      open: await Ticket.count({
+        where: { status: 'open' }
+      }),
+      in_progress: await Ticket.count({
+        where: { status: 'in_progress' }
+      }),
+      resolved: await Ticket.count({
+        where: { status: 'resolved' }
+      }),
+      closed: await Ticket.count({
+        where: { status: 'closed' }
+      }),
+      cancelled: await Ticket.count({
+        where: { status: 'cancelled' }
+      }),
+      high_priority: await Ticket.count({
+        where: { priority: 'high' }
+      }),
+      medium_priority: await Ticket.count({
+        where: { priority: 'medium' }
+      }),
+      low_priority: await Ticket.count({
+        where: { priority: 'low' }
+      })
+    };
+
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error: any) {
+    logger.error(`Erreur lors de la récupération des statistiques: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des statistiques',
+      error: error.message
+    });
+  }
+});
+
 // Route pour obtenir toutes les catégories de tickets
 router.get('/categories', protect, async (req, res) => {
   try {
@@ -251,10 +298,28 @@ router.post('/', protect, async (req, res) => {
       category_id: category_id || null,
       priority: priority || 'medium',
       status: 'open',
-      created_by: req.user.id, // L'utilisateur connecté est le créateur
+      created_by: req.user.id,
       created_at: new Date(),
       updated_at: new Date()
     });
+
+    // Journaliser l'activité
+    await logUserActivity(
+      req.user.id,
+      'ticket_create',
+      `Ticket #${ticket.id} créé`,
+      {
+        module: 'tickets',
+        resource_type: 'ticket',
+        resource_id: ticket.id.toString(),
+        details: {
+          title,
+          category_id,
+          priority
+        },
+        req
+      }
+    );
 
     // Récupération du ticket créé avec ses relations
     const ticketWithRelations = await Ticket.findByPk(ticket.id, {
@@ -289,6 +354,15 @@ router.post('/', protect, async (req, res) => {
 router.get('/:id', protect, async (req, res) => {
   try {
     const ticketId = parseInt(req.params.id);
+    
+    // Vérifier si l'ID est un nombre valide
+    if (isNaN(ticketId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de ticket invalide'
+      });
+    }
+    
     const ticket = await Ticket.findByPk(ticketId, {
       include: [
         {
@@ -735,6 +809,24 @@ router.post('/:id/resolve', protect, async (req, res) => {
       status: 'resolved',
       updated_at: new Date()
     });
+
+    // Journaliser l'activité
+    await logUserActivity(
+      userId,
+      'ticket_update',
+      `Ticket #${ticketId} résolu`,
+      {
+        module: 'tickets',
+        resource_type: 'ticket',
+        resource_id: ticketId.toString(),
+        details: {
+          old_status: oldStatus,
+          new_status: 'resolved',
+          resolution_note
+        },
+        req
+      }
+    );
 
     // Ajouter une entrée dans l'historique
     await TicketHistory.create({

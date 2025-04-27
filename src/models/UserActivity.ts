@@ -6,12 +6,13 @@ import User from './User';
 export type UserActionType = 
   'login' | 'logout' | 'failed_login' | 'password_change' | 
   'profile_update' | 'ticket_create' | 'ticket_update' | 
-  'token_revoked' | 'admin_action' | 'other';
+  'token_revoked' | 'admin_action' | 'other' |
+  'group_list' | 'group_view' | 'group_create' | 'group_update' | 'group_delete';
 
 // Modules concernés par l'activité
 export type UserActionModule = 
   'auth' | 'profile' | 'tickets' | 'nino' | 
-  'monitoring' | 'admin' | 'system';
+  'monitoring' | 'admin' | 'system' | 'groups';
 
 // Statuts possibles pour une activité
 export type UserActionStatus = 
@@ -54,7 +55,8 @@ const UserActivity = sequelize.define('UserActivity', {
     type: Sequelize.ENUM(
       'login', 'logout', 'failed_login', 'password_change', 
       'profile_update', 'ticket_create', 'ticket_update', 
-      'token_revoked', 'admin_action', 'other'
+      'token_revoked', 'admin_action', 'other',
+      'group_list', 'group_view', 'group_create', 'group_update', 'group_delete'
     ),
     allowNull: false
   },
@@ -77,7 +79,7 @@ const UserActivity = sequelize.define('UserActivity', {
   module: {
     type: Sequelize.ENUM(
       'auth', 'profile', 'tickets', 'nino', 
-      'monitoring', 'admin', 'system'
+      'monitoring', 'admin', 'system', 'groups'
     ),
     allowNull: false,
     defaultValue: 'system'

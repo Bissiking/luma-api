@@ -33,12 +33,31 @@ export const CONFIG = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isDev: (process.env.NODE_ENV || 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
+  redis: {
+    enabled: process.env.REDIS_ENABLED === 'true'
+  },
   jwt: {
-    secret: process.env.JWT_SECRET || 'luma_jwt_secret_key_change_in_production',
+    secret: process.env.JWT_ACCESS_SECRET || 'luma_jwt_secret_key_change_in_production',
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'luma_jwt_refresh_secret_key_change_in_production',
-    expiresIn: 60 * 60 * 24, // 24 heures en secondes
-    rememberMeExpiresIn: 60 * 60 * 24 * 7, // 7 jours en secondes
-    refreshExpiresIn: 60 * 60 * 24 * 30 // 30 jours en secondes
+    accessExpiresIn: (process.env.NODE_ENV || 'development') === 'development'
+      ? parseInt(process.env.JWT_ACCESS_EXPIRES_IN || '3600', 10) 
+      : parseInt(process.env.JWT_ACCESS_EXPIRES_IN || '900', 10),
+    refreshExpiresIn: (process.env.NODE_ENV || 'development') === 'development'
+      ? parseInt(process.env.JWT_REFRESH_EXPIRES_IN || '2592000', 10)
+      : parseInt(process.env.JWT_REFRESH_EXPIRES_IN || '604800', 10),
+    rememberMeAccessExpiresIn: parseInt(process.env.JWT_REMEMBER_ME_ACCESS_EXPIRES_IN || '86400', 10), // 24 heures
+    rememberMeRefreshExpiresIn: parseInt(process.env.JWT_REMEMBER_ME_REFRESH_EXPIRES_IN || '2592000', 10), // 30 jours
+    issuer: 'luma-api',
+    audience: 'luma-client',
+    jwtid: true,
+    clockTolerance: 30,
+    algorithm: process.env.JWT_ALGORITHM || 'HS256',
+    cookieSecure: process.env.NODE_ENV === 'production', // Cookies sécurisés en production uniquement
+    cookieHttpOnly: true,
+    cookieSameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'none', // Plus permissif en dev
+    cookieDomain: process.env.NODE_ENV === 'production' ? '.mhemery.fr' : undefined,
+    blacklistEnabled: true,
+    blacklistTolerance: 60 * 60 * 24 * 7
   }
 };
 
@@ -73,7 +92,8 @@ export const API_ROUTES = {
     register: '/register',
     login: '/login',
     logout: '/logout',
-    profile: '/profile'
+    profile: '/profile',
+    refresh: '/refresh'
   }
 };
 

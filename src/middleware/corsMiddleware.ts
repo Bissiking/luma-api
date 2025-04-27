@@ -3,14 +3,25 @@ import { logger } from '../config/logger';
 
 /**
  * Liste des origines autorisées
- * Vous pouvez ajouter d'autres domaines selon les besoins
+ * Peut être étendue via la variable d'environnement CORS_ALLOWED_ORIGINS
  */
-const allowedOrigins = [
+const defaultAllowedOrigins = [
   'https://dev.mhemery.fr',
   'https://mhemery.fr',
+  'http://localhost:5000',
   'http://localhost:3000',
   'http://localhost:8080'
 ];
+
+// Récupérer les origines supplémentaires depuis la variable d'environnement
+const additionalOrigins = process.env.CORS_ALLOWED_ORIGINS ? 
+  process.env.CORS_ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) : 
+  [];
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...additionalOrigins])];
+
+// Logger les origines autorisées au démarrage
+logger.info('Origines CORS autorisées:', { origins: allowedOrigins });
 
 /**
  * Middleware CORS personnalisé pour gérer les requêtes avec credentials

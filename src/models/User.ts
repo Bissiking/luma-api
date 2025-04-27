@@ -1,7 +1,7 @@
-import Sequelize from 'sequelize';
-import bcrypt from 'bcrypt';
+import { Model, DataTypes } from 'sequelize';
+import bcrypt from 'bcryptjs';
 import sequelize from '../config/db';
-import { dbLogger as logger } from '../config/logger';
+import { logger } from '../config/logger';
 
 // Interface pour les attributs d'utilisateur
 export interface UserAttributes {
@@ -18,111 +18,106 @@ export interface UserAttributes {
   updated_at?: Date | null;
 }
 
-// Définition du modèle User
-const User = sequelize.define('User', {
+class User extends Model {
+  public id!: number;
+  public username!: string;
+  public email!: string;
+  public password!: string;
+  public name!: string;
+  public role!: string;
+  public account_active!: boolean;
+  public account_administrator!: boolean;
+  public last_login!: Date;
+  public readonly created_at!: Date;
+  public readonly updated_at!: Date;
+  
+  // Propriétés virtuelles non persistantes
+  public device_info?: string;
+  public ip_address?: string;
+
+  // Déclarer la méthode comparePassword
+  public async comparePassword(candidatePassword: string): Promise<boolean> {
+    try {
+      return await bcrypt.compare(candidatePassword, this.password);
+    } catch (error: any) {
+      logger.error(`Erreur lors de la comparaison des mots de passe: ${error.message}`);
+      return false;
+    }
+  }
+}
+
+User.init({
   id: {
-    type: Sequelize.INTEGER,
+    type: DataTypes.INTEGER,
     autoIncrement: true,
     primaryKey: true
   },
   username: {
-    type: Sequelize.STRING(50),
+    type: DataTypes.STRING(50),
     allowNull: false,
     unique: true
   },
-  password: {
-    type: Sequelize.STRING(255),
-    allowNull: false,
-    validate: {
-      len: [8, 100]
-    }
-  },
   email: {
-    type: Sequelize.STRING(100),
+    type: DataTypes.STRING(100),
     allowNull: false,
     unique: true,
     validate: {
       isEmail: true
     }
   },
+  password: {
+    type: DataTypes.STRING(255),
+    allowNull: false
+  },
   name: {
-    type: Sequelize.STRING(100),
-    allowNull: false,
-    defaultValue: 'Utilisateur' // Valeur par défaut
+    type: DataTypes.STRING(100),
+    allowNull: false
   },
   role: {
-    type: Sequelize.STRING(20),
-    defaultValue: 'user',
-    allowNull: false
-  },
-  account_administrator: {
-    type: Sequelize.BOOLEAN,
-    defaultValue: false,
-    allowNull: false
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'user'
   },
   account_active: {
-    type: Sequelize.BOOLEAN,
-    defaultValue: true,
-    allowNull: false
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true
+  },
+  account_administrator: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false
   },
   last_login: {
-    type: Sequelize.DATE,
-    allowNull: true
-  },
-  created_at: {
-    type: Sequelize.DATE,
-    allowNull: false,
-    defaultValue: Sequelize.NOW
-  },
-  updated_at: {
-    type: Sequelize.DATE,
+    type: DataTypes.DATE,
     allowNull: true
   }
 }, {
+  sequelize,
+  modelName: 'User',
   tableName: 'luma_users',
-  timestamps: false, // Nous gérons manuellement les timestamps
+  timestamps: true,
+  createdAt: 'created_at',
+  updatedAt: 'updated_at',
+  indexes: [
+    { fields: ['username'] },
+    { fields: ['email'] },
+    { fields: ['role'] }
+  ],
   hooks: {
-    beforeCreate: async (user: any) => {
-      try {
+    beforeCreate: async (user: User) => {
+      if (user.password) {
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(user.password, salt);
-        user.created_at = new Date();
-      } catch (error: any) {
-        logger.error(`Erreur lors du hachage du mot de passe: ${error.message}`);
-        throw new Error(error);
       }
     },
-    beforeUpdate: async (user: any) => {
+    beforeUpdate: async (user: User) => {
       if (user.changed('password')) {
-        try {
-          const salt = await bcrypt.genSalt(10);
-          user.password = await bcrypt.hash(user.password, salt);
-        } catch (error: any) {
-          logger.error(`Erreur lors du hachage du mot de passe: ${error.message}`);
-          throw new Error(error);
-        }
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(user.password, salt);
       }
-      user.updated_at = new Date();
     }
-  },
-  indexes: [
-    { name: 'idx_username', fields: ['username'] },
-    { name: 'idx_email', fields: ['email'] },
-    { name: 'idx_role', fields: ['role'] }
-  ]
+  }
 });
 
-// Ajout des méthodes d'instance
-const UserModel = User as any;
-
-// Méthode pour comparer les mots de passe
-UserModel.prototype.comparePassword = async function(candidatePassword: string): Promise<boolean> {
-  try {
-    return await bcrypt.compare(candidatePassword, this.password);
-  } catch (error: any) {
-    logger.error(`Erreur lors de la comparaison des mots de passe: ${error.message}`);
-    return false;
-  }
-};
-
-export default UserModel; 
+export default User; 

@@ -14,9 +14,14 @@ import userRoutes from './routes/userRoutes';
 import monitoringRoutes from './routes/monitoringRoutes';
 import monitoringAlertRoutes from './routes/monitoringAlertRoutes';
 import agentRoutes from './routes/agentRoutes';
+import groupRoutes from './routes/groupRoutes';
 import { API_VERSION, API_INFO, API_FEATURES, API_ROUTES, CONFIG } from './config/api.config';
 import { baseRateLimit } from './config/rateLimit';
 import { setupAssociations } from './models/associations';
+import arkosRoutes from './routes/arkosRoutes';
+import ninoRoutes from './routes/ninoRoutes';
+import { startTokenCleanupTask } from './utils/tokenCleanup';
+import cookieParser from 'cookie-parser';
 
 // Charger les variables d'environnement
 dotenv.config();
@@ -34,6 +39,9 @@ app.use(helmet());
 
 // Middleware CORS personnalisé
 app.use(corsMiddleware);
+
+// Parser les cookies
+app.use(cookieParser());
 
 // Parser le corps des requêtes
 app.use(express.json({ limit: '1mb' }));
@@ -65,12 +73,21 @@ app.use(baseRateLimit);
 
 // Routes
 app.use(`${API_INFO.baseUrl}${API_ROUTES.auth.base}`, authRoutes);
+app.use(`${API_INFO.baseUrl}/nino`, ninoRoutes);
 app.use(`${API_INFO.baseUrl}/tickets`, ticketRoutes);
 app.use(`${API_INFO.baseUrl}/activities`, activityRoutes);
 app.use(`${API_INFO.baseUrl}/users`, userRoutes);
+app.use(`${API_INFO.baseUrl}/groups`, groupRoutes);
 app.use(`${API_INFO.baseUrl}/monitoring`, monitoringRoutes);
 app.use(`${API_INFO.baseUrl}/monitoring/alerts`, monitoringAlertRoutes);
 app.use(`${API_INFO.baseUrl}/agents`, agentRoutes);
+app.use(`${API_INFO.baseUrl}/arkos`, arkosRoutes);
+
+// Route pour désactiver l'indexation SEO
+app.get('/robots.txt', (req: Request, res: Response) => {
+  res.type('text/plain');
+  res.send('User-agent: *\nDisallow: /');
+});
 
 // Route de base
 app.get('/', (req: Request, res: Response) => {
@@ -111,6 +128,17 @@ const startServer = async () => {
     
     // Après l'initialisation de la base de données
     setupAssociations();
+    
+    // Démarrer le nettoyage périodique des tokens JWT (toutes les 24 heures)
+    const cleanupInterval = startTokenCleanupTask(24);
+    
+    // Gestion de l'arrêt gracieux
+    process.on('SIGTERM', () => {
+      logger.info('Signal SIGTERM reçu. Arrêt gracieux du serveur...');
+      if (cleanupInterval) clearInterval(cleanupInterval);
+      // Autres nettoyages si nécessaire
+      process.exit(0);
+    });
     
     // Démarrer le serveur
     app.listen(PORT, () => {

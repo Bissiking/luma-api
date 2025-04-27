@@ -4,6 +4,17 @@ import { logger } from '../config/logger';
 import User from '../models/User';
 import UserToken from '../models/UserToken';
 import { CONFIG } from '../config/api.config';
+import MonitoringAgent from '../models/MonitoringAgent';
+import AuthValidator from '../utils/authValidator';
+import JwtService from '../services/jwtService';
+import { LRUCache } from 'lru-cache';
+
+// Cache LRU pour les validations de token récentes
+const tokenValidationCache = new LRUCache<string, any>({
+  max: 500, // Maximum 500 entrées
+  ttl: 1000 * 60 * 1, // 1 minute de TTL
+  updateAgeOnGet: true // Mettre à jour l'âge lors de la lecture
+});
 
 // Cache pour limiter les logs répétés
 const logCache = {
@@ -42,108 +53,135 @@ declare global {
     interface Request {
       user?: any;
       token?: any;
+      agent?: any;
     }
   }
 }
+
+// Middleware de logging
+export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
+  logger.info('=== Informations de la requête ===');
+  logger.info(`Méthode: ${req.method}`);
+  logger.info(`URL: ${req.url}`);
+  logger.info('Headers:', req.headers);
+  logger.info('Query params:', req.query);
+  logger.info('Body:', req.body);
+  logger.info('================================');
+  next();
+};
 
 /**
  * Middleware pour protéger les routes nécessitant une authentification
  */
 export const protect = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    let token;
+    const requestInfo = {
+      method: req.method,
+      path: req.originalUrl,
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    };
 
-    // Vérifier si le token est présent dans les en-têtes
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-      token = req.headers.authorization.split(' ')[1];
-    }
-
-    // Vérifier si un token existe
+    // Extraire le token
+    const token = AuthValidator.extractTokenFromRequest(req);
+    console.log(`[DEBUG] Token reçu pour ${req.originalUrl}:`, token ? `${token.substring(0, 10)}...` : 'aucun');
+    
     if (!token) {
-      const route = `${req.method} ${req.originalUrl}`;
-      rateLimit(`Tentative d'accès à une route protégée sans token: ${route}`, 'warn', {
-        ip: req.ip,
-        route,
-        userAgent: req.headers['user-agent']
+      rateLimit(`Tentative d'accès à une route protégée sans token`, 'warn', requestInfo);
+      res.status(401).json({ 
+        success: false,
+        message: 'Non autorisé, veuillez vous connecter'
       });
-      res.status(401).json({ message: 'Non autorisé, veuillez vous connecter' });
       return;
     }
 
     try {
-      // Vérifier le token
-      const decoded = jwt.verify(token, CONFIG.jwt.secret) as any;
+      // Vérifier le cache LRU
+      const cacheKey = `token:${token}`;
+      const cachedValidation = tokenValidationCache.get(cacheKey);
+      
+      if (cachedValidation) {
+        console.log(`[DEBUG] Utilisation du cache pour ${req.originalUrl}`);
+        req.user = cachedValidation;
+        return next();
+      }
 
-      // Vérifier si le token existe dans la base de données et est valide
-      const userToken = await UserToken.findOne({
-        where: {
-          jti: decoded.jti,
-          revoked: 0,
-          revoked_at: null,
-          token_type: 'access'
+      // Vérifier la signature du token
+      let decoded;
+      try {
+        decoded = jwt.verify(token, CONFIG.jwt.secret, {
+          algorithms: [CONFIG.jwt.algorithm as jwt.Algorithm],
+          issuer: CONFIG.jwt.issuer,
+          audience: CONFIG.jwt.audience,
+          clockTolerance: 60 // Plus tolérant avec les problèmes d'horloge (60 secondes)
+        }) as any;
+      } catch (error: any) {
+        console.log(`[DEBUG] Erreur JWT pour ${req.originalUrl}:`, error.message);
+        throw error;
+      }
+
+      // Si Redis est désactivé, on saute la vérification de blacklist
+      let isRevoked = false;
+      if (CONFIG.redis.enabled) {
+        try {
+          isRevoked = await JwtService.isTokenRevoked(decoded.jti);
+        } catch (error: any) {
+          console.log(`[DEBUG] Erreur Redis pour ${req.originalUrl}:`, error.message);
+          // On continue même si Redis est en erreur
+          isRevoked = false;
         }
-      });
+      }
 
-      if (!userToken) {
-        rateLimit(`Token invalide ou révoqué: ${decoded.jti}`, 'warn', {
-          jti: decoded.jti,
-          route: `${req.method} ${req.originalUrl}`
+      if (isRevoked) {
+        rateLimit('Token révoqué', 'warn', { ...requestInfo, jti: decoded.jti });
+        res.status(401).json({ 
+          success: false,
+          message: 'Token révoqué'
         });
-        res.status(401).json({ message: 'Token invalide ou expiré' });
         return;
       }
 
-      // Vérifier si le token n'a pas expiré
-      if (new Date() > new Date(userToken.expires_at)) {
-        await userToken.update({ revoked: 1, revoked_at: new Date() });
-        rateLimit(`Token expiré: ${decoded.jti}`, 'warn', {
-          jti: decoded.jti,
-          userId: decoded.id,
-          expiryDate: userToken.expires_at
+      // Vérifier si l'utilisateur est actif (info dans le token)
+      if (!decoded.isActive) {
+        rateLimit('Utilisateur inactif', 'warn', { ...requestInfo, userId: decoded.id });
+        res.status(401).json({ 
+          success: false,
+          message: 'Compte désactivé'
         });
-        res.status(401).json({ message: 'Token expiré' });
         return;
       }
 
-      // Récupérer l'utilisateur
-      const user = await User.findByPk(decoded.id);
-      if (!user || !user.account_active) {
-        rateLimit(`Utilisateur non trouvé ou inactif: ${decoded.id}`, 'warn', {
-          userId: decoded.id,
-          active: user ? user.account_active : false
-        });
-        res.status(401).json({ message: 'Utilisateur non trouvé ou inactif' });
-        return;
-      }
+      // Construire l'objet user à partir des données du token
+      const userFromToken = {
+        id: decoded.id,
+        username: decoded.username,
+        email: decoded.email,
+        role: decoded.role,
+        account_active: decoded.isActive
+      };
 
-      // Log d'accès réussi (mais limité)
-      if (Math.random() < 0.01) { // Seulement 1% des accès réussis sont loggés
-        logger.info(`Accès authentifié: ${user.username}`, {
-          userId: user.id,
-          route: `${req.method} ${req.originalUrl}`
-        });
-      }
+      // Mettre en cache pour 1 minute
+      tokenValidationCache.set(cacheKey, userFromToken);
+      console.log(`[DEBUG] Token validé pour ${req.originalUrl} (user: ${decoded.username})`);
 
-      // Ajouter l'utilisateur et le token à la requête
-      req.user = user;
-      req.token = userToken;
+      // Ajouter à la requête
+      req.user = userFromToken;
       next();
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : 'Erreur inconnue';
-      rateLimit(`Erreur de vérification du token: ${errMsg}`, 'error', {
-        route: `${req.method} ${req.originalUrl}`,
-        error: errMsg
+      rateLimit('Erreur de vérification du token', 'error', { ...requestInfo, error: errMsg });
+      res.status(401).json({ 
+        success: false,
+        message: 'Token invalide'
       });
-      res.status(401).json({ message: 'Token invalide' });
-      return;
     }
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : 'Erreur inconnue';
-    logger.error(`Erreur dans le middleware d'authentification: ${errMsg}`, {
-      route: `${req.method} ${req.originalUrl}`,
-      error: errMsg
+    logger.error('Erreur dans le middleware d\'authentification', { error: errMsg });
+    res.status(500).json({ 
+      success: false,
+      message: 'Erreur serveur'
     });
-    res.status(500).json({ message: 'Erreur serveur' });
   }
 };
 
@@ -152,15 +190,18 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
  */
 export const restrictTo = (...roles: string[]) => {
   return (req: Request, res: Response, next: NextFunction) => {
-    // Vérifier si l'utilisateur a le rôle requis
-    if (!roles.includes(req.user.role)) {
+    // Vérifier si l'utilisateur a le rôle requis en utilisant le validateur
+    if (!AuthValidator.userHasRole(req.user, roles)) {
       rateLimit(`Tentative d'accès à une route restreinte par l'utilisateur: ${req.user.username}`, 'warn', {
         userId: req.user.id,
         role: req.user.role,
         requiredRoles: roles,
         route: `${req.method} ${req.originalUrl}`
       });
-      res.status(403).json({ message: 'Vous n\'avez pas la permission d\'effectuer cette action' });
+      res.status(403).json({ 
+        success: false,
+        message: 'Vous n\'avez pas la permission d\'effectuer cette action'
+      });
       return;
     }
 
@@ -179,7 +220,7 @@ export const restrictTo = (...roles: string[]) => {
  * Middleware pour restreindre l'accès aux administrateurs
  */
 export const requireAdmin = (req: Request, res: Response, next: NextFunction): void => {
-  if (req.user && req.user.role === 'admin') {
+  if (AuthValidator.isAdmin(req.user)) {
     next();
   } else {
     rateLimit(`Tentative d'accès admin par un utilisateur non-admin: ${req.user ? req.user.username : 'anonyme'}`, 'warn', {
@@ -187,6 +228,61 @@ export const requireAdmin = (req: Request, res: Response, next: NextFunction): v
       role: req.user ? req.user.role : null,
       route: `${req.method} ${req.originalUrl}`
     });
-    res.status(403).json({ message: 'Accès refusé. Droits d\'administrateur requis.' });
+    res.status(403).json({ 
+      success: false,
+      message: 'Accès restreint aux administrateurs'
+    });
+  }
+};
+
+/**
+ * Middleware spécifique pour l'authentification des agents de monitoring
+ */
+export const protectAgent = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Token non fourni' 
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { 
+      id: number; 
+      uuid: string;
+      type: string;
+    };
+
+    if (decoded.type !== 'agent') {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Accès non autorisé' 
+      });
+    }
+
+    const agent = await MonitoringAgent.findOne({
+      where: { 
+        uuid: decoded.uuid,
+        token: token
+      }
+    });
+
+    if (!agent) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Agent non trouvé ou token invalide' 
+      });
+    }
+
+    req.agent = agent;
+    next();
+  } catch (error) {
+    console.error('Erreur d\'authentification agent:', error);
+    res.status(401).json({ 
+      success: false, 
+      error: 'Token invalide' 
+    });
   }
 }; 
