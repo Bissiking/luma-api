@@ -3,7 +3,6 @@ database
 logs
 node_modules
 src/logs
-config
 
 # Fichiers
 .env

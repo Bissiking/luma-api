@@ -1,0 +1,19 @@
+FROM node:18-alpine
+
+# Créer le répertoire de l'application
+WORKDIR /app
+
+# Installation de typescript globalement
+RUN npm install -g typescript ts-node nodemon
+
+# Copie des fichiers de dépendances
+COPY package*.json ./
+
+# Installation des dépendances
+RUN npm install
+
+# Exposition du port
+EXPOSE 3000
+
+# Démarrage en mode développement
+CMD ["npm", "run", "dev"] 

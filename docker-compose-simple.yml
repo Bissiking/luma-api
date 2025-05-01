@@ -15,13 +15,6 @@ services:
       - "3306:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
-    networks:
-      - luma-network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # Interface d'administration pour MariaDB
   phpmyadmin:
@@ -37,8 +30,6 @@ services:
       PMA_PASSWORD: root
     ports:
       - "8080:80"
-    networks:
-      - luma-network
 
   # Serveur Redis pour la gestion des sessions
   redis:
@@ -49,13 +40,6 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    networks:
-      - luma-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # Interface d'administration pour Redis
   redis-commander:
@@ -68,21 +52,17 @@ services:
       REDIS_HOSTS: redis
     ports:
       - "8081:8081"
-    networks:
-      - luma-network
 
   # Application API LUMA - Mode développement
-  api-dev:
+  api:
     image: node:18-alpine
-    container_name: luma-api-dev
+    container_name: luma-api
     restart: always
     depends_on:
       - mariadb
       - redis
     environment:
       NODE_ENV: development
-      ENVIRONMENT: development
-      GIT_URL: https://github.com/matheo/luma-api.git
       PORT: 3000
       DB_HOST: mariadb
       DB_PORT: 3306
@@ -99,49 +79,8 @@ services:
       - "3000:3000"
     volumes:
       - .:/app
-      - /app/node_modules
     working_dir: /app
-    command: sh -c "npm install && npm install -g typescript ts-node nodemon && npm run dev"
-    networks:
-      - luma-network
-
-  # Application API LUMA - Mode production
-  api-prod:
-    image: node:18-alpine
-    container_name: luma-api-prod
-    restart: always
-    depends_on:
-      - mariadb
-      - redis
-    environment:
-      NODE_ENV: production
-      ENVIRONMENT: production
-      GIT_URL: https://github.com/matheo/luma-api.git
-      PORT: 3001
-      DB_HOST: mariadb
-      DB_PORT: 3306
-      DB_NAME: luma
-      DB_USER: luma
-      DB_PASSWORD: luma
-      DB_DIALECT: mariadb
-      REDIS_ENABLED: 'true'
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      JWT_ACCESS_SECRET: luma_jwt_secret_key_change_in_production
-      JWT_REFRESH_SECRET: luma_jwt_refresh_secret_key_change_in_production
-    ports:
-      - "3001:3001"
-    volumes:
-      - .:/app
-      - /app/node_modules
-    working_dir: /app
-    command: sh -c "npm install && npm run build && npm start"
-    networks:
-      - luma-network
-
-networks:
-  luma-network:
-    driver: bridge
+    command: sh -c "npm install && npm run dev"
 
 volumes:
   mariadb_data:
