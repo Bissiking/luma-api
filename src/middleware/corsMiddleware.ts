@@ -8,6 +8,7 @@ import { logger } from '../config/logger';
 const defaultAllowedOrigins = [
   'https://dev.mhemery.fr',
   'https://mhemery.fr',
+  'https://recette.mhemery.fr',
   'http://localhost:5000',
   'http://localhost:3000',
   'http://localhost:8080'
