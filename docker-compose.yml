@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # Base de données MariaDB
+  mariadb:
+    image: mariadb:10.6
+    container_name: luma-mariadb
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: luma
+      MYSQL_USER: luma
+      MYSQL_PASSWORD: luma
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - luma-network
+
+  # Serveur Redis pour la gestion des sessions
+  redis:
+    image: redis:alpine
+    container_name: luma-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - luma-network
+
+  # Application API LUMA
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: luma-api
+    restart: always
+    depends_on:
+      - mariadb
+      - redis
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: luma
+      DB_USER: luma
+      DB_PASSWORD: luma
+      DB_DIALECT: mariadb
+      REDIS_ENABLED: 'true'
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_ACCESS_SECRET: luma_jwt_secret_key_change_in_production
+      JWT_REFRESH_SECRET: luma_jwt_refresh_secret_key_change_in_production
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm start
+    networks:
+      - luma-network
+
+networks:
+  luma-network:
+    driver: bridge
+
+volumes:
+  mariadb_data:
+  redis_data: 
