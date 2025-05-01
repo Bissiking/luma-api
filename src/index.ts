@@ -15,9 +15,10 @@ import monitoringRoutes from './routes/monitoringRoutes';
 import monitoringAlertRoutes from './routes/monitoringAlertRoutes';
 import agentRoutes from './routes/agentRoutes';
 import groupRoutes from './routes/groupRoutes';
+import debugRoutes from './routes/debugRoutes';
 import { API_VERSION, API_INFO, API_FEATURES, API_ROUTES, CONFIG } from './config/api.config';
 import { baseRateLimit } from './config/rateLimit';
-import { setupAssociations } from './models/associations';
+import { initAssociations } from './models/associations';
 import arkosRoutes from './routes/arkosRoutes';
 import ninoRoutes from './routes/ninoRoutes';
 import { startTokenCleanupTask } from './utils/tokenCleanup';
@@ -43,9 +44,9 @@ app.use(corsMiddleware);
 // Parser les cookies
 app.use(cookieParser());
 
-// Parser le corps des requêtes
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+// Parser le corps des requêtes avec une limite plus grande pour les images
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Logger les requêtes HTTP
 if (API_FEATURES.logging.enabled) {
@@ -82,6 +83,7 @@ app.use(`${API_INFO.baseUrl}/monitoring`, monitoringRoutes);
 app.use(`${API_INFO.baseUrl}/monitoring/alerts`, monitoringAlertRoutes);
 app.use(`${API_INFO.baseUrl}/agents`, agentRoutes);
 app.use(`${API_INFO.baseUrl}/arkos`, arkosRoutes);
+app.use(`${API_INFO.baseUrl}/debug`, debugRoutes);
 
 // Route pour désactiver l'indexation SEO
 app.get('/robots.txt', (req: Request, res: Response) => {
@@ -127,7 +129,7 @@ const startServer = async () => {
     await syncModels(false);
     
     // Après l'initialisation de la base de données
-    setupAssociations();
+    initAssociations();
     
     // Démarrer le nettoyage périodique des tokens JWT (toutes les 24 heures)
     const cleanupInterval = startTokenCleanupTask(24);

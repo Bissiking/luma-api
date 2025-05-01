@@ -12,6 +12,8 @@ import userRoutes from './routes/userRoutes';
 import ticketRoutes from './routes/ticketRoutes';
 import monitoringRoutes from './routes/monitoringRoutes';
 import groupRoutes from './routes/groupRoutes';
+import bugRoutes from './routes/bugRoutes';
+import debugRoutes from './routes/debugRoutes';
 import { logger } from './config/logger';
 
 const app = express();
@@ -19,7 +21,7 @@ const app = express();
 // Configuration CORS avancée pour supporter les cookies entre domaines si nécessaire
 const corsOptions = {
   origin: CONFIG.isDev ? ['https://dev.mhemery.fr', 'http://localhost:3000'] : API_FEATURES.cors.origin,
-  methods: API_FEATURES.cors.methods,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   credentials: true, // Nécessaire pour les cookies
   allowedHeaders: [
     'Content-Type',
@@ -36,8 +38,8 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(helmet());
 app.use(morgan('dev'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser()); // Pour parser les cookies
 
 // Servir les fichiers statiques (robots.txt, favicon, etc.)
@@ -50,6 +52,8 @@ app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/tickets', ticketRoutes);
 app.use('/api/v1/monitoring', monitoringRoutes);
 app.use('/api/v1/groups', groupRoutes);
+app.use('/api/v1/bugs', bugRoutes);
+app.use('/api/v1/debug', debugRoutes);
 
 // Route de base pour vérifier l'API
 app.get('/api/v1', (req, res) => {

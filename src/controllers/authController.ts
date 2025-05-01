@@ -9,6 +9,7 @@ import { logLoginActivity, logLogoutActivity } from '../utils/activityLogger';
 import { CONFIG } from '../config/api.config';
 import JwtService from '../services/jwtService';
 import AuthValidator from '../utils/authValidator';
+import AuthorizationService from '../services/authorizationService';
 
 // Durée de validité du token JWT en secondes (24 heures)
 const TOKEN_EXPIRATION = 60 * 60 * 24;
@@ -159,6 +160,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       last_login: new Date()
     });
 
+    // Récupérer les autorisations de l'utilisateur
+    const authorizations = await AuthorizationService.getUserAuthorizations(user.id);
+
     // Journaliser la connexion réussie
     await logLoginActivity(user.id, true, req, accessJti, source);
 
@@ -188,10 +192,16 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         role: user.role,
         name: user.name
       },
+      authorizations: {
+        groups: authorizations.groups,
+        permissions: authorizations.permissions
+      },
       token: accessToken,
-      refresh_token: refreshToken, // Inclus dans la réponse même si envoyé dans un cookie
+      refresh_token: refreshToken,
       expires_at: accessExpiresAt.toISOString(),
-      refresh_expires_at: refreshExpiresAt.toISOString()
+      refresh_expires_at: refreshExpiresAt.toISOString(),
+      redirectTo: '/dashboard',
+      storage: 'sessionStorage'
     });
   } catch (error: any) {
     logger.error(`Erreur lors de la connexion: ${error.message}`);
@@ -234,7 +244,7 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
 
       // Journaliser la déconnexion
       await logLogoutActivity(req.user.id, req, req.token.jti);
-      
+
       logger.info(`Déconnexion réussie pour l'utilisateur: ${req.user.username}`);
     }
     
@@ -294,50 +304,57 @@ export const verifyToken = async (req: Request, res: Response): Promise<void> =>
  */
 export const verifyTokenWithCredentials = async (req: Request, res: Response): Promise<any> => {
   // Si on atteint cette méthode, c'est que le token a déjà été vérifié par le middleware
-  return res.json({
-    success: true,
-    message: 'Token valide',
-    data: {
-      user: {
-        id: req.user.id,
-        username: req.user.username,
-        email: req.user.email,
-        role: req.user.role,
-        name: req.user.name
+    return res.json({
+      success: true,
+      message: 'Token valide',
+      data: {
+        user: {
+          id: req.user.id,
+          username: req.user.username,
+          email: req.user.email,
+          role: req.user.role,
+          name: req.user.name
+        }
       }
-    }
-  });
+    });
 };
 
 /**
- * Récupérer le profil de l'utilisateur connecté
+ * Récupère le profil de l'utilisateur connecté
  */
 export const getProfile = async (req: Request, res: Response): Promise<void> => {
   try {
-    const user = req.user;
-    
-    // Vérifier si l'utilisateur existe encore en base
-    const freshUser = await User.findByPk(user.id);
-    if (!freshUser || !AuthValidator.isUserActive(freshUser)) {
+    const userId = req.user.id;
+
+    // Récupérer l'utilisateur depuis la base de données pour avoir les données à jour
+    const user = await User.findByPk(userId);
+
+    if (!user) {
       res.status(404).json({
         success: false,
-        message: 'Utilisateur non trouvé ou compte désactivé'
+        message: 'Utilisateur non trouvé'
       });
       return;
     }
-    
+
+    // Récupérer les autorisations de l'utilisateur
+    const authorizations = await AuthorizationService.getUserAuthorizations(userId);
+
     res.json({
       success: true,
-      data: {
-        user: {
-          id: freshUser.id,
-          username: freshUser.username,
-          email: freshUser.email,
-          name: freshUser.name,
-          role: freshUser.role,
-          account_administrator: freshUser.account_administrator,
-          last_login: freshUser.last_login
-        }
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        account_active: user.account_active,
+        account_administrator: user.account_administrator,
+        last_login: user.last_login
+      },
+      authorizations: {
+        groups: authorizations.groups,
+        permissions: authorizations.permissions
       }
     });
   } catch (error: any) {
@@ -388,7 +405,7 @@ export const refreshToken = async (req: Request, res: Response): Promise<void> =
         maxAge: (remember_me ? CONFIG.jwt.rememberMeRefreshExpiresIn : CONFIG.jwt.refreshExpiresIn) * 1000
       });
     }
-
+    
     res.json({
       success: true,
       message: 'Token rafraîchi avec succès',

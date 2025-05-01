@@ -7,6 +7,7 @@ import { CONFIG } from '../config/api.config';
 import MonitoringAgent from '../models/MonitoringAgent';
 import AuthValidator from '../utils/authValidator';
 import JwtService from '../services/jwtService';
+import RedisService from '../services/redisService';
 import { LRUCache } from 'lru-cache';
 
 // Cache LRU pour les validations de token récentes
@@ -15,6 +16,16 @@ const tokenValidationCache = new LRUCache<string, any>({
   ttl: 1000 * 60 * 1, // 1 minute de TTL
   updateAgeOnGet: true // Mettre à jour l'âge lors de la lecture
 });
+
+// Interface pour les sessions Redis
+interface SessionData {
+  userId: number;
+  username: string;
+  role: string;
+  lastActivity: number;
+  deviceInfo: string;
+  ipAddress: string;
+}
 
 // Cache pour limiter les logs répétés
 const logCache = {
@@ -54,6 +65,7 @@ declare global {
       user?: any;
       token?: any;
       agent?: any;
+      session?: SessionData;
     }
   }
 }
@@ -120,25 +132,52 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
         throw error;
       }
 
-      // Si Redis est désactivé, on saute la vérification de blacklist
-      let isRevoked = false;
+      // Vérifier la session dans Redis
+      const sessionKey = `session:${decoded.jti}`;
+      let sessionData: SessionData | null = null;
+
       if (CONFIG.redis.enabled) {
         try {
-          isRevoked = await JwtService.isTokenRevoked(decoded.jti);
+          sessionData = await RedisService.getSession(sessionKey);
+          
+          if (!sessionData) {
+            // Créer une nouvelle session
+            const newSessionData: SessionData = {
+              userId: decoded.id,
+              username: decoded.username,
+              role: decoded.role,
+              lastActivity: Date.now(),
+              deviceInfo: req.headers['user-agent'] || 'unknown',
+              ipAddress: req.ip || 'unknown'
+            };
+            await RedisService.setSession(sessionKey, newSessionData, CONFIG.jwt.accessExpiresIn);
+            sessionData = newSessionData;
+          } else {
+            // Mettre à jour la dernière activité
+            sessionData.lastActivity = Date.now();
+            await RedisService.updateSession(sessionKey, sessionData);
+          }
         } catch (error: any) {
-          console.log(`[DEBUG] Erreur Redis pour ${req.originalUrl}:`, error.message);
-          // On continue même si Redis est en erreur
-          isRevoked = false;
+          logger.error('Erreur Redis lors de la gestion de session', error);
+          // Continuer même si Redis est en erreur
         }
       }
 
-      if (isRevoked) {
-        rateLimit('Token révoqué', 'warn', { ...requestInfo, jti: decoded.jti });
-        res.status(401).json({ 
-          success: false,
-          message: 'Token révoqué'
-        });
-        return;
+      // Vérifier si le token est révoqué
+      if (CONFIG.redis.enabled) {
+        try {
+          const isRevoked = await RedisService.isTokenRevoked(decoded.jti);
+          if (isRevoked) {
+            rateLimit('Token révoqué', 'warn', { ...requestInfo, jti: decoded.jti });
+            res.status(401).json({ 
+              success: false,
+              message: 'Token révoqué'
+            });
+            return;
+          }
+        } catch (error: any) {
+          logger.error('Erreur Redis lors de la vérification du token', error);
+        }
       }
 
       // Vérifier si l'utilisateur est actif (info dans le token)
@@ -166,6 +205,9 @@ export const protect = async (req: Request, res: Response, next: NextFunction): 
 
       // Ajouter à la requête
       req.user = userFromToken;
+      if (sessionData) {
+        req.session = sessionData;
+      }
       next();
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : 'Erreur inconnue';

@@ -2,6 +2,7 @@ import { Model, DataTypes } from 'sequelize';
 import bcrypt from 'bcryptjs';
 import sequelize from '../config/db';
 import { logger } from '../config/logger';
+// Import du modèle Group sera fait après sa création pour éviter les références circulaires
 
 // Interface pour les attributs d'utilisateur
 export interface UserAttributes {
@@ -34,6 +35,10 @@ class User extends Model {
   // Propriétés virtuelles non persistantes
   public device_info?: string;
   public ip_address?: string;
+
+  // Pour les associations
+  public groups?: any[];
+  public permissions?: any[];
 
   // Déclarer la méthode comparePassword
   public async comparePassword(candidatePassword: string): Promise<boolean> {
@@ -113,11 +118,13 @@ User.init({
     },
     beforeUpdate: async (user: User) => {
       if (user.changed('password')) {
-        const salt = await bcrypt.genSalt(10);
-        user.password = await bcrypt.hash(user.password, salt);
+          const salt = await bcrypt.genSalt(10);
+          user.password = await bcrypt.hash(user.password, salt);
       }
     }
   }
 });
+
+// Les associations seront définies dans un fichier séparé pour éviter les références circulaires
 
 export default User; 

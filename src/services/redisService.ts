@@ -1,84 +1,221 @@
-import { createClient } from 'redis';
-import { logger } from '../config/logger';
+import Redis from 'ioredis';
 import { CONFIG } from '../config/api.config';
+import { logger } from '../config/logger';
+import dotenv from 'dotenv';
+dotenv.config();
 
-// Log explicite au démarrage
-if (CONFIG.redis.enabled) {
-  logger.info('[REDIS] Redis est ACTIVÉ dans la configuration.');
-} else {
-  logger.info('[REDIS] Redis est DÉSACTIVÉ dans la configuration.');
+// Interface pour les sessions Redis
+export interface SessionData {
+  userId: number;
+  username: string;
+  role: string;
+  lastActivity: number;
+  deviceInfo: string;
+  ipAddress: string;
 }
 
 class RedisService {
-  private static client: ReturnType<typeof createClient>;
-  private static isConnected = false;
-  private static isBroken = false;
+  private static instance: RedisService;
+  private client!: Redis;
 
-  static async connect() {
-    if (!CONFIG.redis.enabled) return null;
-    if (this.isBroken) return null;
+  private constructor() {
+    if (!CONFIG.redis.enabled) {
+      logger.warn('Redis est désactivé dans la configuration');
+      return;
+    }
+
     try {
-      if (!this.client) {
-        this.client = createClient({
-          url: process.env.REDIS_URL || 'redis://localhost:6379'
-        });
+      const redisHost = process.env.REDIS_URL; // IP fixe de Redis
+      const redisPort = 6379;
 
-        this.client.on('error', (err) => {
-          logger.warn('[REDIS] Erreur de connexion, Redis sera ignoré :', err);
-          this.isConnected = false;
-          this.isBroken = true;
-        });
+      logger.info(`Tentative de connexion à Redis sur ${redisHost}:${redisPort}`);
 
-        this.client.on('connect', () => {
-          logger.info('Connecté à Redis');
-          this.isConnected = true;
-          this.isBroken = false;
-        });
+      this.client = new Redis({
+        host: redisHost,
+        port: redisPort,
+        password: process.env.REDIS_PASSWORD || CONFIG.redis.password || undefined,
+        db: parseInt(process.env.REDIS_DB || CONFIG.redis.db.toString(), 10),
+        retryStrategy: (times) => {
+          const delay = Math.min(times * 50, 2000);
+          return delay;
+        },
+        maxRetriesPerRequest: 3,
+        enableOfflineQueue: true,
+        connectTimeout: 10000,
+        commandTimeout: 10000,
+        lazyConnect: true
+      });
 
-        await this.client.connect();
-      }
-      return this.client;
+      this.client.on('error', (error) => {
+        logger.error('Erreur Redis fatale', {
+          error: error.message,
+          host: redisHost,
+          port: redisPort
+        });
+        logger.error('Veuillez vérifier que Redis est accessible sur cette adresse');
+        process.exit(1);
+      });
+
+      this.client.on('connect', () => {
+        logger.info(`Connecté à Redis sur ${redisHost}:${redisPort}`);
+      });
+
+      // Vérification de la connexion au démarrage
+      this.checkConnection();
     } catch (error) {
-      logger.warn('[REDIS] Impossible de se connecter à Redis, il sera ignoré :', error);
-      this.isBroken = true;
+      logger.error('Erreur lors de l\'initialisation de Redis', error);
+      logger.error('Veuillez vérifier que Redis est accessible sur cette adresse');
+      process.exit(1);
+    }
+  }
+
+  private async checkConnection(): Promise<void> {
+    try {
+      await this.client.connect(); // Connexion explicite
+      const result = await this.client.ping();
+      if (result !== 'PONG') {
+        throw new Error('Réponse Redis invalide');
+      }
+      logger.info('Test de connexion Redis réussi');
+    } catch (error) {
+      logger.error('Impossible de se connecter à Redis', {
+        error: error instanceof Error ? error.message : 'Erreur inconnue',
+        host: this.client.options.host,
+        port: this.client.options.port
+      });
+      logger.error('Veuillez vérifier que Redis est accessible sur cette adresse');
+      process.exit(1);
+    }
+  }
+
+  public static getInstance(): RedisService {
+    if (!RedisService.instance) {
+      RedisService.instance = new RedisService();
+    }
+    return RedisService.instance;
+  }
+
+  /**
+   * Récupère une session depuis Redis
+   */
+  public async getSession(sessionKey: string): Promise<SessionData | null> {
+    try {
+      const data = await this.client.get(sessionKey);
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      logger.error('Erreur lors de la récupération de la session', error);
       return null;
     }
   }
 
-  static async isTokenBlacklisted(jti: string): Promise<boolean> {
-    if (!CONFIG.redis.enabled || this.isBroken) return false;
+  /**
+   * Crée ou met à jour une session dans Redis
+   */
+  public async setSession(sessionKey: string, data: SessionData, ttl: number): Promise<void> {
     try {
-      if (!this.isConnected) await this.connect();
-      if (this.isBroken) return false;
-      const exists = await this.client.exists(`blacklist:${jti}`);
+      await this.client.setex(sessionKey, ttl, JSON.stringify(data));
+    } catch (error) {
+      logger.error('Erreur lors de la sauvegarde de la session', error);
+    }
+  }
+
+  /**
+   * Met à jour une session existante
+   */
+  public async updateSession(sessionKey: string, data: SessionData): Promise<void> {
+    try {
+      const ttl = await this.client.ttl(sessionKey);
+      if (ttl > 0) {
+        await this.client.setex(sessionKey, ttl, JSON.stringify(data));
+      }
+    } catch (error) {
+      logger.error('Erreur lors de la mise à jour de la session', error);
+    }
+  }
+
+  /**
+   * Vérifie si un token est révoqué
+   */
+  public async isTokenRevoked(tokenId: string): Promise<boolean> {
+    try {
+      const exists = await this.client.exists(`revoked:${tokenId}`);
       return exists === 1;
     } catch (error) {
-      logger.warn('[REDIS] Erreur lors de la vérification de la blacklist, Redis ignoré :', error);
-      this.isBroken = true;
+      logger.error('Erreur lors de la vérification du token révoqué', error);
       return false;
     }
   }
 
-  static async blacklistToken(jti: string, expiresIn: number): Promise<void> {
-    if (!CONFIG.redis.enabled || this.isBroken) return;
+  /**
+   * Révoque un token
+   */
+  public async revokeToken(tokenId: string, ttl: number): Promise<void> {
     try {
-      if (!this.isConnected) await this.connect();
-      if (this.isBroken) return;
-      await this.client.setEx(`blacklist:${jti}`, expiresIn, '1');
-      logger.debug(`Token ${jti} ajouté à la blacklist pour ${expiresIn} secondes`);
+      await this.client.setex(`revoked:${tokenId}`, ttl, '1');
     } catch (error) {
-      logger.warn('[REDIS] Erreur lors de l\'ajout à la blacklist, Redis ignoré :', error);
-      this.isBroken = true;
+      logger.error('Erreur lors de la révocation du token', error);
     }
   }
 
-  static async disconnect(): Promise<void> {
-    if (!CONFIG.redis.enabled || this.isBroken) return;
-    if (this.client) {
-      await this.client.quit();
-      this.isConnected = false;
+  /**
+   * Supprime une session
+   */
+  public async deleteSession(sessionKey: string): Promise<void> {
+    try {
+      await this.client.del(sessionKey);
+    } catch (error) {
+      logger.error('Erreur lors de la suppression de la session', error);
+    }
+  }
+
+  /**
+   * Récupère toutes les sessions actives d'un utilisateur
+   */
+  public async getUserSessions(userId: number): Promise<SessionData[]> {
+    try {
+      const keys = await this.client.keys(`session:*`);
+      const sessions: SessionData[] = [];
+
+      for (const key of keys) {
+        const data = await this.client.get(key);
+        if (data) {
+          const session = JSON.parse(data);
+          if (session.userId === userId) {
+            sessions.push(session);
+          }
+        }
+      }
+
+      return sessions;
+    } catch (error) {
+      logger.error('Erreur lors de la récupération des sessions utilisateur', error);
+      return [];
+    }
+  }
+
+  /**
+   * Ajoute un token à la liste noire
+   */
+  public async blacklistToken(tokenId: string, ttl: number): Promise<void> {
+    try {
+      await this.client.setex(`blacklist:${tokenId}`, ttl, '1');
+    } catch (error) {
+      logger.error('Erreur lors de l\'ajout du token à la liste noire', error);
+    }
+  }
+
+  /**
+   * Vérifie si un token est dans la liste noire
+   */
+  public async isTokenBlacklisted(tokenId: string): Promise<boolean> {
+    try {
+      const exists = await this.client.exists(`blacklist:${tokenId}`);
+      return exists === 1;
+    } catch (error) {
+      logger.error('Erreur lors de la vérification du token dans la liste noire', error);
+      return false;
     }
   }
 }
 
-export default RedisService; 
+export default RedisService.getInstance(); 

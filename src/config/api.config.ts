@@ -34,18 +34,22 @@ export const CONFIG = {
   isDev: (process.env.NODE_ENV || 'development') === 'development',
   isProd: process.env.NODE_ENV === 'production',
   redis: {
-    enabled: process.env.REDIS_ENABLED === 'true'
+    enabled: process.env.REDIS_ENABLED === 'true',
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || '',
+    db: parseInt(process.env.REDIS_DB || '0', 10)
   },
   jwt: {
     secret: process.env.JWT_ACCESS_SECRET || 'luma_jwt_secret_key_change_in_production',
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'luma_jwt_refresh_secret_key_change_in_production',
     accessExpiresIn: (process.env.NODE_ENV || 'development') === 'development'
-      ? parseInt(process.env.JWT_ACCESS_EXPIRES_IN || '3600', 10) 
-      : parseInt(process.env.JWT_ACCESS_EXPIRES_IN || '900', 10),
+      ? parseInt(process.env.JWT_ACCESS_EXPIRES_IN || '86400', 10) // 24 heures en dev
+      : parseInt(process.env.JWT_ACCESS_EXPIRES_IN || '3600', 10), // 1 heure en prod
     refreshExpiresIn: (process.env.NODE_ENV || 'development') === 'development'
       ? parseInt(process.env.JWT_REFRESH_EXPIRES_IN || '2592000', 10)
       : parseInt(process.env.JWT_REFRESH_EXPIRES_IN || '604800', 10),
-    rememberMeAccessExpiresIn: parseInt(process.env.JWT_REMEMBER_ME_ACCESS_EXPIRES_IN || '86400', 10), // 24 heures
+    rememberMeAccessExpiresIn: parseInt(process.env.JWT_REMEMBER_ME_ACCESS_EXPIRES_IN || '604800', 10), // 7 jours
     rememberMeRefreshExpiresIn: parseInt(process.env.JWT_REMEMBER_ME_REFRESH_EXPIRES_IN || '2592000', 10), // 30 jours
     issuer: 'luma-api',
     audience: 'luma-client',
